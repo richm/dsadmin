@@ -12,7 +12,7 @@ REPLBINDPW = ''
 
 
 @static_var("REPLICAID", 1)
-def get_next_replicaid(replica_id=None, replica_type=None):            
+def get_next_replicaid(replica_id=None, replica_type=None):
     if replica_id:
         REPLICAID = replica_id
         return REPLICAID
@@ -23,7 +23,6 @@ def get_next_replicaid(replica_id=None, replica_type=None):
         return REPLICAID
 
     return 0
-
 
 
 class DSAdminHarness(DSAdmin):
@@ -41,15 +40,18 @@ class DSAdminHarness(DSAdmin):
         args.setdefault('bindpw', REPLBINDPW)
 
         return DSAdmin.setupAgreement(self, repoth, args)
-        
+
     def setupReplica(self, args):
         """Set default replia credentials """
         args.setdefault('binddn', REPLBINDDN)
         args.setdefault('bindpw', REPLBINDPW)
         # manage a progressive REPLICAID
-        args.setdefault('id', get_next_replicaid(args.get('id'), args.get('type')))
+        args.setdefault(
+            'id', get_next_replicaid(args.get('id'), args.get('type')))
         return DSAdmin.setupReplica(self, args)
-        
-   def setupBindDN(self, binddn=REPLBINDDN, bindpw=REPLBINDPW):
-       return DSAdmin.setupBindDN(self, binddn, bindpw)
-     
+
+    def setupBindDN(self, binddn=REPLBINDDN, bindpw=REPLBINDPW):
+        return DSAdmin.setupBindDN(self, binddn, bindpw)
+
+    def setupReplBindDN(self, binddn=REPLBINDDN, bindpw=REPLBINDPW):
+        return self.setupBindDN(binddn, bindpw)

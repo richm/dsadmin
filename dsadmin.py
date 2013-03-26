@@ -12,7 +12,7 @@ try:
 except ImportError:
     import popen2
     HASPOPEN = False
-    
+
 import sys
 import os
 import os.path
@@ -29,6 +29,7 @@ import operator
 import shutil
 import datetime
 import select
+import logging
 
 from ldap.ldapobject import SimpleLDAPObject
 from ldapurl import LDAPUrl
@@ -57,6 +58,9 @@ DN_CONFIG = "cn=config"
 DN_LDBM = "cn=ldbm database,cn=plugins,cn=config"
 DN_MAPPING_TREE = "cn=mapping tree,cn=config"
 DN_CHAIN = "cn=chaining database,cn=plugins,cn=config"
+
+# My logger
+log = logging.getLogger(__name__)
 
 
 class Error(Exception):
@@ -598,6 +602,8 @@ class DSAdmin(SimpleLDAPObject):
 
             e.g. when using the start command, we just need to reconnect,
              not create a new instance"""
+        log.info("Initializing %s with %s:%s" % (self.__class__,
+                 host, sslport or port))
         self.__wrapmethods()
         self.verbose = verbose
         self.port = port
@@ -633,15 +639,19 @@ class DSAdmin(SimpleLDAPObject):
 
             XXX This cannot return None
         """
+        log.debug("Retrieving entry with %r" % [args])
         res = self.search(*args)
         restype, obj = self.result(res)
         # TODO: why not test restype?
         if not obj:
             raise NoSuchEntryError("no such entry for %r" % [args])
-        elif isinstance(obj, Entry):
+
+        log.info("Retrieved entry %r" % obj)
+        if isinstance(obj, Entry):
             return obj
         else:  # assume list/tuple
-            assert obj[0] is not None, "None entry!"  # TEST CODE
+            if obj[0] is None:
+                raise NoSuchEntryError("Entry is None")
             return obj[0]
 
     def __wrapmethods(self):
@@ -743,34 +753,29 @@ class DSAdmin(SimpleLDAPObject):
 
     def start(self, verbose=False, timeout=0):
         if not self.isLocal and hasattr(self, 'asport'):
-            if verbose:
-                print "starting remote server ", self
+            log.debug("starting remote server %s " % self)
             cgiargs = {}
             rc = DSAdmin.cgiPost(self.host, self.asport, self.cfgdsuser,
                                  self.cfgdspwd,
                                  "/slapd-%s/Tasks/Operation/start" % self.inst,
                                  verbose, cgiargs)
-            if verbose:
-                print "connecting remote server", self
+            log.debug("connecting remote server %s" % self)
             if not rc:
                 self.__localinit__()
-            if verbose:
-                print "started remote server %s rc = %d" % (self, rc)
+            log.info("started remote server %s rc = %d" % (self, rc))
             return rc
         else:
+            log.debug("Starting server %r" % self)
             return self.serverCmd('start', verbose, timeout)
 
     def startTask(self, entry, verbose=False):
         # start the task
         dn = entry.dn
         self.add_s(entry)
-        entry = self.getEntry(dn, ldap.SCOPE_BASE)
-        if not entry:
-            if verbose:
-                print "Entry %s was added successfully, but I cannot search it" % dn
-                return False
-        elif verbose:
-            print entry
+
+        if verbose:
+            self._test_entry(dn, ldap.SCOPE_BASE)
+
         return True
 
     def checkTask(self, entry, dowait=False, verbose=False):
@@ -1076,13 +1081,18 @@ class DSAdmin(SimpleLDAPObject):
             raise LDAPError("Error adding suffix entry " + dn, e)
 
         if verbose:
-            try:
-                entry = self.getEntry(dn, ldap.SCOPE_BASE)
-                print entry
-            except NoSuchEntryError:
-                raise MissingEntryError("Entry %s was added successfully, but I cannot search it" % dn)
+            self._test_entry(dn, ldap.SCOPE_BASE)
 
         return rc
+
+    def _test_entry(self, dn, scope=ldap.SCOPE_BASE):
+        try:
+            entry = self.getEntry(dn, scope)
+            log.info("Found entry %s" % entry)
+            return entry
+        except NoSuchEntryError:
+            log.exception("Entry %s was added successfully, but I cannot search it" % dn)
+            raise MissingEntryError("Entry %s was added successfully, but I cannot search it" % dn)
 
     def getMTEntry(self, suffix, attrs=None):
         """Given a suffix, return the mapping tree entry for it.  If attrs is
@@ -1460,36 +1470,27 @@ class DSAdmin(SimpleLDAPObject):
         self.setupChainingMux(
             suffix, isIntermediate, binddn, bindpw, to.toLDAPURL())
 
-    def setupChangelog(self, dirpath=None, dbname='changelogdb'):
-        """Setup the replication changelog.
-            Return 0 on success
+    def setupChangelog(self, dbname='changelogdb'):
+        """Add and return the replication changelog entry.
 
-            If dbname starts with "/" then it's considered a full path and dirpath is skipped
-            TODO: why dirpath="" and not None?
-            TODO: remove dirpath?
-            TODO: why not return changelog entry and raise on fault
+            If dbname starts with "/" then it's considered a full path,
+            otherwise it's relative to self.dbdir
         """
         dn = "cn=changelog5,cn=config"
-        dirpath = os.path.join(dirpath or self.dbdir, dbname)
+        dirpath = os.path.join(self.dbdir, dbname)
         entry = Entry(dn)
         entry.update({
             'objectclass': ("top", "extensibleobject"),
             'cn': "changelog5",
             'nsslapd-changelogdir': dirpath
         })
-        print entry
+        log.debug("adding changelog entry: %r" % entry)
         try:
             self.add_s(entry)
         except ldap.ALREADY_EXISTS:
-            print "entry %s already exists" % dn
-            return 0
+            log.warn("entry %s already exists" % dn)
 
-        entry = self.getEntry(dn, ldap.SCOPE_BASE)
-        if not entry:
-            raise NoSuchEntryError("Entry %s was added successfully, but I cannot search it" % dn)
-        elif self.verbose:
-            print entry
-        return 0
+        return self._test_entry(dn, ldap.SCOPE_BASE)
 
     def enableChainOnUpdate(self, suffix, bename):
         # first, get the mapping tree entry to modify
@@ -1551,7 +1552,6 @@ class DSAdmin(SimpleLDAPObject):
 
             TODO: use the more descriptive naming stuff? suffix, rtype=MASTER_TYPE, legacy=False, id=None
             TODO: this method does not update replica type
-            DONE: replaced id and type keywords with rid and rtype
         """
         suffix = args['suffix']
         binddn = args['binddn']
@@ -1577,7 +1577,7 @@ class DSAdmin(SimpleLDAPObject):
         except ldap.NO_SUCH_OBJECT:
             entry = None
         if entry:
-            print "Already setup replica for suffix", suffix
+            log.warn("Already setup replica for suffix", suffix)
             rec = self.suffixes.setdefault(nsuffix, {})
             rec['dn'] = dn_replica
             rec['type'] = repltype
@@ -1589,7 +1589,6 @@ class DSAdmin(SimpleLDAPObject):
             binddnlist.append(binddn)
         else:
             binddnlist = binddn
-
 
         entry = Entry(dn_replica)
         entry.setValues(
@@ -1615,12 +1614,9 @@ class DSAdmin(SimpleLDAPObject):
         self.add_s(entry)
 
         # check if the entry exists TODO better to raise!
-        entry = self.getEntry(dn_replica, ldap.SCOPE_BASE)
-        if not entry:
-            print "Entry %s was added successfully, but I cannot search it" % dn_replica
-            return -1
-        elif self.verbose:
-            print entry
+        if verbose:
+            self._test_entry(dn, ldap.SCOPE_BASE)
+
         self.suffixes[nsuffix] = {'dn': dn_replica, 'type': repltype}
         return 0
 
@@ -1658,18 +1654,15 @@ class DSAdmin(SimpleLDAPObject):
         try:
             self.add_s(ent)
         except ldap.ALREADY_EXISTS:
-            print "Entry %s already exists" % binddn
-        ent = self.getEntry(binddn, ldap.SCOPE_BASE)
-        if not ent:
-            print "Entry %s was added successfully, but I cannot search it" % binddn
-            return -1
-        elif self.verbose:
-            print ent
-        return 0
+            log.warn("Entry %s already exists" % binddn)
 
-    def setupReplBindDN(self, dn, pwd):
-        """TODO why not remove this redundant method?"""
-        return self.setupBindDN(dn, pwd)
+        try:
+            self._test_entry(binddn, ldap.SCOPE_BASE)
+        except MissingEntryError:
+            log.exception("This entry should exist!")
+            return -1
+
+        return 0
 
     def setupWinSyncAgmt(self, args, entry):
         if 'winsync' not in args:
@@ -1743,11 +1736,11 @@ class DSAdmin(SimpleLDAPObject):
         # adding agreement to previously created replica
         # eventually setting self.suffixes dict.
         if not nsuffix in self.suffixes:
-            replents = self.getReplicaEnts(suffix)
-            if not replents:
+            replica_entries = self.getReplicaEnts(suffix)
+            if not replica_entries:
                 raise NoSuchEntryError(
                     "Error: no replica set up for suffix " + suffix)
-            replent = replents[0]
+            replent = replica_entries[0]
             self.suffixes[nsuffix] = {
                 'dn': replent.dn,
                 'type': int(replent.nsds5replicatype)
@@ -1760,11 +1753,11 @@ class DSAdmin(SimpleLDAPObject):
         except ldap.NO_SUCH_OBJECT:
             entry = None
         if entry:
-            print "Agreement exists:", dn_agreement
+            log.warn("Agreement exists:", dn_agreement)
             self.suffixes.setdefault(nsuffix, {})[str(consumer)] = dn_agreement
             return dn_agreement
         if (nsuffix in self.agmt) and (consumer in self.agmt[nsuffix]):
-            print "Agreement exists:", dn_agreement
+            log.warn( "Agreement exists:", dn_agreement)
             return dn_agreement
 
         # In a separate function in this scope?
@@ -1803,7 +1796,7 @@ class DSAdmin(SimpleLDAPObject):
             self.setupWinSyncAgmt(args, entry)
 
         try:
-            print "Replica agreement: [%s]" % entry
+            log.debug("Adding replica agreement: [%s]" % entry)
             self.add_s(entry)
         except:
             #  TODO check please!
@@ -1841,11 +1834,13 @@ class DSAdmin(SimpleLDAPObject):
         return dn_agreement
 
     def stopReplication(self, agmtdn):
+        log.info("Stopping replication %s" % agmtdn)
         mod = [(
             ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', ['2358-2359 0'])]
         self.modify_s(agmtdn, mod)
 
     def restartReplication(self, agmtdn):
+        log.info("Stopping replication %s" % agmtdn)
         mod = [(ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [
                 '0000-2359 0123456'])]
         self.modify_s(agmtdn, mod)
@@ -1881,10 +1876,10 @@ class DSAdmin(SimpleLDAPObject):
                     'nsds5replicaChangesSentSinceStartup', 'nsds5replicaLastUpdateStatus',
                     'nsds5replicaChangesSkippedSinceStartup', 'nsds5ReplicaHost',
                     'nsds5ReplicaPort']
-        ent = self.getEntry(
-            agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
-        if not ent:
-            print "Error reading status from agreement", agmtdn
+        try:
+            ent = self.getEntry(agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
+        except NoSuchEntryError:
+            raise NoSuchEntryError("Error reading status from agreement", agmtdn)
         else:
             rh = ent.nsds5ReplicaHost
             rp = ent.nsds5ReplicaPort
@@ -1916,12 +1911,14 @@ class DSAdmin(SimpleLDAPObject):
         return ""
 
     def getChangesSent(self, agmtdn):
-        ent = self.getEntry(agmtdn, ldap.SCOPE_BASE, "(objectclass=*)",
-                            ['nsds5replicaChangesSentSinceStartup'])
         retval = 0
-        if not ent:
-            print "Error reading status from agreement", agmtdn
-        elif ent.nsds5replicaChangesSentSinceStartup:
+        try:
+            ent = self.getEntry(agmtdn, ldap.SCOPE_BASE, "(objectclass=*)",
+                            ['nsds5replicaChangesSentSinceStartup'])
+        except:
+            raise NoSuchEntryError("Error reading status from agreement", agmtdn)
+            
+        if ent.nsds5replicaChangesSentSinceStartup:
             val = ent.nsds5replicaChangesSentSinceStartup
             items = val.split(' ')
             if len(items) == 1:
@@ -1939,15 +1936,15 @@ class DSAdmin(SimpleLDAPObject):
 
     def checkReplInit(self, agmtdn):
         """returns tuple - first element is done/not done, 2nd is no error/has error"""
-        done = False
-        hasError = 0
+        done, hasError = False, 0
         attrlist = ['cn', 'nsds5BeginReplicaRefresh', 'nsds5replicaUpdateInProgress',
                     'nsds5ReplicaLastInitStatus', 'nsds5ReplicaLastInitStart',
                     'nsds5ReplicaLastInitEnd']
-        entry = self.getEntry(
-            agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
-        if not entry:
-            print "Error reading status from agreement", agmtdn
+        try:
+            entry = self.getEntry(
+                agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
+        except NoSuchEntryError:
+            log.exception("Error reading status from agreement", agmtdn)
             hasError = 1
         else:
             refresh = entry.nsds5BeginReplicaRefresh
@@ -2038,10 +2035,9 @@ class DSAdmin(SimpleLDAPObject):
             self.setupChangelog()
         # create replica user
         try:
-            self.setupReplBindDN(*user)
+            self.setupBindDN(*user)
         except ldap.ALREADY_EXISTS:
-            # no problem ;)
-            pass
+            log.warn("User already exists: %r " % user)
 
         # setup replica
         self.setupReplica(repArgs)
@@ -2260,7 +2256,7 @@ class DSAdmin(SimpleLDAPObject):
     @staticmethod
     def getnewcfgdsinfo(args):
         """Use the new style prefix/etc/dirsrv/admin-serv/adm.conf.
-        
+
             args = {'admconf': obj } where obj.ldapurl != None
         """
         url = LDAPUrl(args['admconf'].ldapurl)
@@ -2275,7 +2271,7 @@ class DSAdmin(SimpleLDAPObject):
     @staticmethod
     def getcfgdsinfo(args):
         """Returns a 3-tuple consisting of the host, port, and cfg suffix.
-        
+
             `args` = {
                 'cfgdshost':
                 'cfgdsport':
@@ -2288,12 +2284,11 @@ class DSAdmin(SimpleLDAPObject):
         parameter for the server root path.  If successful, """
         try:
             return args['cfgdshost'], int(args['cfgdsport']), DSAdmin.CFGSUFFIX
-        except KeyError: # if keys are missing...
+        except KeyError:  # if keys are missing...
             if args['new_style']:
                 return DSAdmin.getnewcfgdsinfo(args)
-                
-            return DSAdmin.getoldcfgdsinfo(args)            
 
+            return DSAdmin.getoldcfgdsinfo(args)
 
     @staticmethod
     def getcfgdsuserdn(cfgdn, args):
@@ -2360,7 +2355,7 @@ class DSAdmin(SimpleLDAPObject):
     @staticmethod
     def getadminport(cfgconn, cfgdn, args):
         """Return a 2-tuple (asport, True) if the admin server is using SSL, False otherwise.
-        
+
         Get the admin server port so we can contact it via http.  We get this from
         the configuration entry using the CFGSUFFIX and cfgconn.  Also get any other
         information we may need from that entry.  The ."""
@@ -2542,14 +2537,14 @@ SchemaFile= %s
 
     @staticmethod
     def cgiPost(host, port, username, password, uri, verbose, secure, args=None):
-        """Post the request to the admin server. 
-        
-           Admin server requires authentication, so we use the auth handler classes.  
-            
-            NOTE: the url classes in python use the deprecated 
-            base64.encodestring() function, which truncates lines, 
+        """Post the request to the admin server.
+
+           Admin server requires authentication, so we use the auth handler classes.
+
+            NOTE: the url classes in python use the deprecated
+            base64.encodestring() function, which truncates lines,
             causing Apache to give us a 400 Bad Request error for the
-            Authentication string.  So, we have to tell 
+            Authentication string.  So, we have to tell
             base64.encodestring() not to truncate."""
         args = args or {}
         prefix = 'http'
@@ -2594,8 +2589,6 @@ SchemaFile= %s
             # restore binsize
             base64.MAXBINSIZE = savedbinsize
         return exitCode
-
-
 
     @staticmethod
     def createInstance(args):
@@ -2755,10 +2748,6 @@ SchemaFile= %s
 
         conn.replicaSetupAll(repArgs)
         return conn
-
-
-
-
 
 
 def testit():

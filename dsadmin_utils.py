@@ -1,4 +1,4 @@
-"""Utilities for DSAdmin. 
+"""Utilities for DSAdmin.
 
     TODO put them in a module!
 """
@@ -8,7 +8,7 @@ try:
 except ImportError:
     import popen2
     HASPOPEN = False
-    
+
 import socket
 import ldap
 import re
@@ -16,6 +16,8 @@ import re
 #
 # Decorator
 #
+
+
 def static_var(varname, value):
     def decorate(func):
         setattr(func, varname, value)
@@ -114,9 +116,11 @@ def getdefaultsuffix(name=''):
     else:
         return 'dc=localdomain'
 
+
 def is_a_dn(dn):
     """Returns True if the given string is a DN, False otherwise."""
     return (dn.find("=") > 0)
+
 
 def get_sbin_dir(sroot, prefix):
     if sroot:

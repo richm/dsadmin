@@ -5,6 +5,9 @@ from dsadmin import NoSuchEntryError
 import dsadmin
 import ldap
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
 
 class config(object):
     auth = {'host': 'localhost',
@@ -25,17 +28,26 @@ class MockDSAdmin(object):
             return 'ldap://%s:%s' % (self.host, self.port)
 
 
-conn = None
+def expect(entry, name, value):
+    assert entry, "Bad entry %r " % entry
+    assert entry.getValue(name) == value, "Bad value for entry %s. Expected %r vs %r" % (entry, entry.getValue(name), value)
 
 
 def dfilter(my_dict, keys):
     return dict([(k, v) for k, v in my_dict.iteritems() if k in keys])
 
 
+conn = None
+
+
 def setup():
     global conn
     conn = DSAdmin(**config.auth)
     conn.verbose = True
+
+#
+# Tests
+#
 
 
 def bind_test():
@@ -119,12 +131,22 @@ def setupBindDN_CN_test():
     assert e
 
 
+def setupChangelog_default_test():
+    e = conn.setupChangelog()
+    assert e.dn, "Bad changelog entry: %r " % e
+    assert e.getValue('nsslapd-changelogdir').endswith("changelogdb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
+
+@SkipTest
 def setupChangelog_test():
-    assert conn.setupChangelog(dbname="mockChangelogDb") == 0
+    e = conn.setupChangelog(dbname="mockChangelogDb")
+    assert e.dn, "Bad changelog entry: %r " % e
+    assert e.getValue('nsslapd-changelogdir').endswith("mockChangelogDb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
 
-
+@SkipTest
 def setupChangelog_full_test():
-    assert conn.setupChangelog(dbname="/tmp/mockChangelogDb") == 0
+    e = conn.setupChangelog(dbname="/tmp/mockChangelogDb")
+    assert e.dn, "Bad changelog entry: %r " % e
+    expect(e, 'nsslapd-changelogdir', "/tmp/mockChangelogDb")
 
 
 def prepare_master_replica_test():
@@ -139,7 +161,6 @@ def prepare_master_replica_test():
 
 
 def setupAgreement_test():
-
     consumer = MockDSAdmin()
     args = {
         'suffix': "o=addressbook6",

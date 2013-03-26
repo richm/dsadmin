@@ -136,11 +136,13 @@ def setupChangelog_default_test():
     assert e.dn, "Bad changelog entry: %r " % e
     assert e.getValue('nsslapd-changelogdir').endswith("changelogdb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
 
+
 @SkipTest
 def setupChangelog_test():
     e = conn.setupChangelog(dbname="mockChangelogDb")
     assert e.dn, "Bad changelog entry: %r " % e
     assert e.getValue('nsslapd-changelogdir').endswith("mockChangelogDb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
+
 
 @SkipTest
 def setupChangelog_full_test():

@@ -1757,7 +1757,7 @@ class DSAdmin(SimpleLDAPObject):
             self.suffixes.setdefault(nsuffix, {})[str(consumer)] = dn_agreement
             return dn_agreement
         if (nsuffix in self.agmt) and (consumer in self.agmt[nsuffix]):
-            log.warn( "Agreement exists:", dn_agreement)
+            log.warn("Agreement exists:", dn_agreement)
             return dn_agreement
 
         # In a separate function in this scope?
@@ -1877,9 +1877,11 @@ class DSAdmin(SimpleLDAPObject):
                     'nsds5replicaChangesSkippedSinceStartup', 'nsds5ReplicaHost',
                     'nsds5ReplicaPort']
         try:
-            ent = self.getEntry(agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
+            ent = self.getEntry(
+                agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
         except NoSuchEntryError:
-            raise NoSuchEntryError("Error reading status from agreement", agmtdn)
+            raise NoSuchEntryError(
+                "Error reading status from agreement", agmtdn)
         else:
             rh = ent.nsds5ReplicaHost
             rp = ent.nsds5ReplicaPort
@@ -1914,10 +1916,11 @@ class DSAdmin(SimpleLDAPObject):
         retval = 0
         try:
             ent = self.getEntry(agmtdn, ldap.SCOPE_BASE, "(objectclass=*)",
-                            ['nsds5replicaChangesSentSinceStartup'])
+                                ['nsds5replicaChangesSentSinceStartup'])
         except:
-            raise NoSuchEntryError("Error reading status from agreement", agmtdn)
-            
+            raise NoSuchEntryError(
+                "Error reading status from agreement", agmtdn)
+
         if ent.nsds5replicaChangesSentSinceStartup:
             val = ent.nsds5replicaChangesSentSinceStartup
             items = val.split(' ')

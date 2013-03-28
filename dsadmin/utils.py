@@ -24,6 +24,15 @@ def static_var(varname, value):
         return func
     return decorate
 
+
+#
+# Various searchs to be used in getEntry
+#   eg getEntry(*searchs['NAMINGCONTEXTS'])
+#
+searchs = {
+'NAMINGCONTEXTS': ('',ldap.SCOPE_BASE, '(objectclass=*)', ['namingcontexts'])
+}
+
 #
 # Utilities
 #

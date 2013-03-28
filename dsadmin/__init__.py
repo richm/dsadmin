@@ -950,74 +950,53 @@ class DSAdmin(SimpleLDAPObject):
                     "Error: mapping tree entry %r has no suffix" % ent.dn)
         return sufs
 
-    def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase=None, verbose=False):
+    def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase='localdb', verbose=False):
         """Setup a backend and return its dn. Blank on error
 
-            FIXME: avoid duplicate backends
         """
         attrvals = attrvals or {}
         dnbase = ""
-        # if benamebase is set, try creating without appending
-        if benamebase:
-            benum = 0
-        else:
-            benum = 1
 
         # figure out what type of be based on args
         if binddn and bindpw and urls:  # its a chaining be
-            benamebase = benamebase or "chaindb"
             dnbase = DN_CHAIN
         else:  # its a ldbm be
-            benamebase = benamebase or "localdb"
             dnbase = DN_LDBM
 
         nsuffix = normalizeDN(suffix)
-        done = False
-        while not done:
-            try:
-                # if benamebase is set, benum starts at 0
-                # and the first attempt tries to create the
-                # simple benamebase. On failure benum is
-                # incremented and the suffix is appended
-                # to the cn
-                if benum:
-                    cn = benamebase + str(benum)  # e.g. localdb1
-                else:
-                    cn = benamebase
-                log.debug("create backend with cn: %s" % cn)
-                dn = "cn=" + cn + "," + dnbase
-                entry = Entry(dn)
+        try:
+            cn = benamebase
+            log.debug("create backend with cn: %s" % cn)
+            dn = "cn=" + cn + "," + dnbase
+            entry = Entry(dn)
+            entry.update({
+                'objectclass': ['top', 'extensibleObject', 'nsBackendInstance'],
+                'cn': cn,
+                'nsslapd-suffix': nsuffix
+            })
+
+            if binddn and bindpw and urls:  # its a chaining be
                 entry.update({
-                    'objectclass': ['top', 'extensibleObject', 'nsBackendInstance'],
-                    'cn': cn,
-                    'nsslapd-suffix': nsuffix
-                })
+                             'nsfarmserverurl': urls,
+                             'nsmultiplexorbinddn': binddn,
+                             'nsmultiplexorcredentials': bindpw
+                             })
+            else:  # set ldbm parameters, if any
+                pass
+                #     $entry->add('nsslapd-cachesize' => '-1');
+                #     $entry->add('nsslapd-cachememsize' => '2097152');
 
-                if binddn and bindpw and urls:  # its a chaining be
-                    entry.update({
-                                 'nsfarmserverurl': urls,
-                                 'nsmultiplexorbinddn': binddn,
-                                 'nsmultiplexorcredentials': bindpw
-                                 })
-                else:  # set ldbm parameters, if any
-                    pass
-                    #     $entry->add('nsslapd-cachesize' => '-1');
-                    #     $entry->add('nsslapd-cachememsize' => '2097152');
-
-                # set attrvals (but not cn, because it's in dn)
-                if attrvals:
-                    for attr, val in attrvals.items():
-                        log.debug("adding %s = %s to entry %s" % (
-                                  attr, val, dn))
-                        entry.setValues(attr, val)
-                log.debug("adding entry: %r" % entry)
-                self.add_s(entry)
-                done = True
-            except ldap.ALREADY_EXISTS:
-                benum += 1
-            except ldap.LDAPError, e:
-                log.exception("Could not add backend entry")
-                raise DsError("Could not add backend entry %r" % dn)
+            # set attrvals (but not cn, because it's in dn)
+            if attrvals:
+                for attr, val in attrvals.items():
+                    log.debug("adding %s = %s to entry %s" % (
+                              attr, val, dn))
+                    entry.setValues(attr, val)
+            log.debug("adding entry: %r" % entry)
+            self.add_s(entry)
+        except ldap.LDAPError, e:
+            log.exception("Could not add backend entry: %r" % dn)
+            raise
 
         self._test_entry(dn, ldap.SCOPE_BASE)
         return cn
@@ -1049,7 +1028,7 @@ class DSAdmin(SimpleLDAPObject):
 
         # fix me when we can actually used escaped DNs
         #dn = "cn=%s,cn=mapping tree,cn=config" % escapedn
-        dn = ','.join('cn="%s"' % nsuffix, DN_MAPPING_TREE)
+        dn = ','.join(('cn="%s"' % nsuffix, DN_MAPPING_TREE))
         entry = Entry(dn)
         entry.update({
             'objectclass': ['top', 'extensibleObject', 'nsMappingTree'],
@@ -1162,7 +1141,7 @@ class DSAdmin(SimpleLDAPObject):
 
     def getDBStats(self, suffix, bename=''):
         if bename:
-            dn = ','.join("cn=monitor,cn=%s" % bename, DN_LDBM)
+            dn = ','.join(("cn=monitor,cn=%s" % bename, DN_LDBM))
         else:
             entries_backend = self.getBackendsForSuffix(suffix)
             dn = "cn=monitor," + entries_backend[0].dn
@@ -1416,7 +1395,7 @@ class DSAdmin(SimpleLDAPObject):
         return val
 
     def setupChainingIntermediate(self):
-        confdn = ','.join("cn=config", DN_CHAIN)
+        confdn = ','.join(("cn=config", DN_CHAIN))
         try:
             self.modify_s(confdn, [(ldap.MOD_ADD, 'nsTransmittedControl',
                                    ['2.16.840.1.113730.3.4.12', '1.3.6.1.4.1.1466.29539.12'])])
@@ -1603,15 +1582,9 @@ class DSAdmin(SimpleLDAPObject):
         return 0
 
     def setupBindDN(self, binddn, bindpw):
-        """ Create a person entry with the given dn and pwd.
-            Return 0 on success
+        """ Return - eventually creating - a person entry with the given dn and pwd.
 
-            binddn can be an entry
-
-            TODO: Could we return the newly created entry and raise
-                exception on fault?
-
-            DONE: supported uid attribute too
+            binddn can be a dsadmin.Entry
         """
         try:
             assert binddn
@@ -1639,12 +1612,12 @@ class DSAdmin(SimpleLDAPObject):
             log.warn("Entry %s already exists" % binddn)
 
         try:
-            self._test_entry(binddn, ldap.SCOPE_BASE)
+            entry = self._test_entry(binddn, ldap.SCOPE_BASE)
+            return entry
         except MissingEntryError:
             log.exception("This entry should exist!")
-            return -1
+            raise
 
-        return 0
 
     def setupWinSyncAgmt(self, args, entry):
         if 'winsync' not in args:
@@ -2187,7 +2160,7 @@ class DSAdmin(SimpleLDAPObject):
         elif tryrepl:
             print "Could not get RUV from", suffix, "entry - trying cn=replica"
             ensuffix = escapeDNValue(normalizeDN(suffix))
-            dn = ','.join("cn=replica,cn=%s" % ensuffix, DN_MAPPING_TREE)
+            dn = ','.join(("cn=replica,cn=%s" % ensuffix, DN_MAPPING_TREE))
             ents = self.search_s(dn, ldap.SCOPE_BASE, "objectclass=*", attrs)
         if ents and (len(ents) > 0):
             ent = ents[0]

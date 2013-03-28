@@ -55,3 +55,41 @@ class DSAdminHarness(DSAdmin):
 
     def setupReplBindDN(self, binddn=REPLBINDDN, bindpw=REPLBINDPW):
         return self.setupBindDN(binddn, bindpw)
+        
+    def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase=None, verbose=False):
+        """Create a backends using the first available cn."""
+        # if benamebase is set, try creating without appending
+        if benamebase:
+            benum = 0
+        else:
+            benum = 1
+
+        # figure out what type of be based on args
+        if binddn and bindpw and urls:  # its a chaining be
+            benamebase = benamebase or "chaindb"
+        else:  # its a ldbm be
+            benamebase = benamebase or "localdb"
+            
+        done = False
+        while not done:
+            # if benamebase is set, benum starts at 0
+            # and the first attempt tries to create the
+            # simple benamebase. On failure benum is
+            # incremented and the suffix is appended
+            # to the cn
+            if benum:
+                benamebase_tmp = benamebase + str(benum)  # e.g. localdb1
+            else:
+                benamebase_tmp = benamebase
+
+            try:
+                cn = DSAdmin.setupBackend(suffix, binddn, bindpw, urls, attrvals, benamebase, verbose)
+                done = True
+            except ldap.ALREADY_EXISTS:
+                benum += 1
+                
+        return cn
+
+
+
+

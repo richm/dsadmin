@@ -1,85 +1,87 @@
 from nose import *
 from nose.tools import *
+import config
+from config import log
+from config import *
+
 from dsadmin import DSAdmin, Entry
 from dsadmin import NoSuchEntryError
 import dsadmin
 import ldap
 
-import logging
-logging.basicConfig(level=logging.DEBUG)
 
-
-class config(object):
-    auth = {'host': 'localhost',
-            'port': 389,
-            'binddn': 'cn=directory manager',
-            'bindpw': 'password'}
-
-
-class MockDSAdmin(object):
-    host = 'localhost'
-    port = 389
-    sslport = 0
-
-    def __str__(self):
-        if self.sslport:
-            return 'ldaps://%s:%s' % (self.host, self.sslport)
-        else:
-            return 'ldap://%s:%s' % (self.host, self.port)
-
-
-def expect(entry, name, value):
-    assert entry, "Bad entry %r " % entry
-    assert entry.getValue(name) == value, "Bad value for entry %s. Expected %r vs %r" % (entry, entry.getValue(name), value)
-
-
-def dfilter(my_dict, keys):
-    return dict([(k, v) for k, v in my_dict.iteritems() if k in keys])
+from subprocess import Popen
 
 
 conn = None
-
+added_entries = None
 
 def setup():
     global conn
     conn = DSAdmin(**config.auth)
     conn.verbose = True
+    conn.added_entries = []
+
+def tearDown():
+    global conn
+    for e in conn.added_entries:
+        conn.delete_s(e)
+
+def drop_backend(suffix, bename=None, maxnum=50):
+    global conn
+    if not bename:
+        bename = [x.dn for x in conn.getBackendsForSuffix(suffix) ]   
+    assert bename, "Missing bename for %r" % suffix
+    if not hasattr(bename, '__iter__'):
+        bename = [ ','.join(['cn=%s' % bename, dsadmin.DN_LDBM]) ]
+    for be in bename:
+        log.debug("removing entry from %r" % be)
+        leaves = [x.dn for x in conn.search_s(be, ldap.SCOPE_SUBTREE, '(objectclass=*)', ['cn']) ]
+        # start deleting the leaves - which have the max number of ","
+        leaves.sort(key=lambda x:x.count(",")) 
+        while leaves and maxnum:        
+            # to avoid infinite loops
+            # limit the iterations
+            maxnum-= 1
+            try:
+                log.debug("removing %s" % leaves[-1])
+                conn.delete_s(leaves[-1])
+                leaves.pop()
+            except:
+                leaves.insert(0, leaves.pop())
+        
+        if not maxnum:
+            raise Exception("BAD")
+    
 
 #
 # Tests
 #
 
 
-def bind_test():
-    print "conn: %s" % conn
 
 
 def addbackend_harn(conn, name):
     suffix = "o=%s" % name
     e = Entry((suffix, {
                'objectclass': ['top', 'organization'],
-               'o': 'name'
+               'o': name
                }))
 
     ret = conn.addSuffix(suffix, name)
     conn.add(e)
 
-
 def setupBackend_ok_test():
-    be = conn.setupBackend('o=backend1')
+    be = conn.setupBackend('o=mockbe1', 'mockbe1')
     assert be
 
-
+@raises(ldap.ALREADY_EXISTS)
 def setupBackend_double_test():
-    be1 = conn.setupBackend('o=backend1')
-    be11 = conn.setupBackend('o=backend1')
-    assert be1
-    assert be11
-    assert be1 == be11
-
+    be1 = conn.setupBackend('o=mockbe2', 'mockbe2')
+    be11 = conn.setupBackend('o=mockbe2', 'mockbe2')
 
 def addsuffix_test():
-    addbackend_harn(conn, 'addressbook6')
+    addbackend_harn(conn, 'addressbook16')
 
 
 def addreplica_write_test():
@@ -106,49 +108,17 @@ def setupSSL_test():
         'sourcedir': None,
         'secargs': {'nsSSLPersonalitySSL': 'localhost'},
     }
+    cert_dir = conn.getDseAttr('nsslapd-certdir')
+    assert cert_dir, "Cannot retrieve cert dir"
+    
+    log.info("Creating a self-signed cert for the server")
+    cmd = 'certutil -d %s -S -n localhost  -t CTu,Cu,Cu  -s cn=localhost -x' % cert_dir
+    Popen(cmd.split(), stdin=open("/dev/urandom"))
+    
+    log.info("Testing ssl configuration")
     conn.setupSSL(**ssl_args)
 
 
-def setupBindDN_UID_test():
-    # TODO change returning the entry instead of 0
-    user = {
-        'binddn': 'uid=rmanager1,cn=config',
-        'bindpw': 'password'
-    }
-    assert conn.setupBindDN(**user) == 0
-    e = conn.getEntry(user['binddn'], ldap.SCOPE_BASE)
-    assert e
-
-
-def setupBindDN_CN_test():
-    # TODO change returning the entry instead of 0
-    user = {
-        'binddn': 'cn=rmanager1,cn=config',
-        'bindpw': 'password'
-    }
-    assert conn.setupBindDN(**user) == 0
-    e = conn.getEntry(user['binddn'], ldap.SCOPE_BASE)
-    assert e
-
-
-def setupChangelog_default_test():
-    e = conn.setupChangelog()
-    assert e.dn, "Bad changelog entry: %r " % e
-    assert e.getValue('nsslapd-changelogdir').endswith("changelogdb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
-
-
-@SkipTest
-def setupChangelog_test():
-    e = conn.setupChangelog(dbname="mockChangelogDb")
-    assert e.dn, "Bad changelog entry: %r " % e
-    assert e.getValue('nsslapd-changelogdir').endswith("mockChangelogDb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
-
-
-@SkipTest
-def setupChangelog_full_test():
-    e = conn.setupChangelog(dbname="/tmp/mockChangelogDb")
-    assert e.dn, "Bad changelog entry: %r " % e
-    expect(e, 'nsslapd-changelogdir', "/tmp/mockChangelogDb")
 
 
 def prepare_master_replica_test():
@@ -157,9 +127,13 @@ def prepare_master_replica_test():
         'bindpw': 'password'
     }
     conn.enableReplLogging()
-    conn.setupBindDN(**user)
+    e = conn.setupBindDN(**user)
+    conn.added_entries.append(e.dn)
+
     # only for Writable
-    conn.setupChangelog()
+    e = conn.setupChangelog()
+    conn.added_entries.append(e.dn)
+
 
 
 def setupAgreement_test():
@@ -172,18 +146,11 @@ def setupAgreement_test():
         'type': dsadmin.MASTER_TYPE
     }
     conn.setupReplica(args)
+    conn.added_entries.append(args['binddn'])
+
     dn_replica = conn.setupAgreement(consumer, args)
     print dn_replica
 
-
-def setLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 5
-    assert conn.setLogLevel(*vals) == sum(vals)
-
-
-def setLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 5
-    assert conn.setAccessLogLevel(*vals) == sum(vals)
 
 
 @raises(NoSuchEntryError)
@@ -192,6 +159,6 @@ def getMTEntry_missing_test():
 
 
 def getMTEntry_present_test():
-    suffix = 'o=addressbook6'
+    suffix = 'o=addressbook16'
     e = conn.getMTEntry(suffix)
     assert e, "Entry should be present %s" % suffix

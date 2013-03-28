@@ -80,6 +80,11 @@ class MissingEntryError(NoSuchEntryError):
     pass
 
 
+class  DsError(Error):
+    """Generic DS Error."""
+    pass
+
+
 class Entry(object):
     """This class represents an LDAP Entry object.
 
@@ -216,7 +221,7 @@ class Entry(object):
 
     def update(self, dct):
         """Update passthru to the data attribute."""
-        print "update with %s" % dct
+        log.debug("update with %r" % dct)
         for k, v in dct.items():
             if hasattr(v, '__iter__'):
                 self.data[k] = v
@@ -263,7 +268,7 @@ class CSN(object):
             self.seq = 0
             self.rid = 0
             self.subseq = 0
-            print csnstr, "is not a valid CSN"
+            log.info("%r is not a valid CSN" % csnstr)
 
     def csndiff(self, oth):
         return (oth.ts - self.ts, oth.seq - self.seq, oth.rid - self.rid, oth.subseq - self.subseq)
@@ -345,14 +350,14 @@ class RUV(object):
                                  'min': CSN(matchruv.group(3)),
                                  'max': CSN(matchruv.group(4))}
             else:
-                print "unknown RUV element", item
+                log.info("unknown RUV element %r" % item)
         for item in ent.getValues('nsruvReplicaLastModified'):
             matchruv = RUV.ruvre.match(item)
             if matchruv:
                 rid = int(matchruv.group(1))
                 self.rid[rid]['lastmod'] = int(matchruv.group(3), 16)
             else:
-                print "unknown nsruvReplicaLastModified item", item
+                log.info("unknown nsruvReplicaLastModified item %r" % item)
 
     def __cmp__(self, oth):
         if self is oth:
@@ -500,15 +505,17 @@ class DSAdmin(SimpleLDAPObject):
     DEFAULT_USER_ID = "nobody"
 
     def getDseAttr(self, attrname):
+        """Return a given attribute from dse.ldif."""
         conffile = self.confdir + '/dse.ldif'
         try:
-            dseldif = LDIFConn(conffile)
-            cnconfig = dseldif.get(DN_CONFIG)
+            dse_ldif = LDIFConn(conffile)
+            cnconfig = dse_ldif.get(DN_CONFIG)
             if cnconfig:
                 return cnconfig.getValue(attrname)
-        except IOError, err:
-            print "could not read dse config file", err
-        return None
+            return None
+        except IOError as err:
+            log.exception("could not read dse config file")
+            raise err
 
     def __initPart2(self):
         """Initialize the DSAdmin structure filling various fields, like:
@@ -543,8 +550,8 @@ class DSAdmin(SimpleLDAPObject):
                 if not instdir:
                     instdir = self.confdir
                 if self.verbose:
-                    print "instdir=", instdir
-                    print ent
+                    log.debug("instdir=%r" % instdir)
+                    log.debug("Entry: %r" % ent)
                 match = re.match(r'(.*)[\/]slapd-([^/]+)$', instdir)
                 if match:
                     self.sroot, self.inst = match.groups()
@@ -556,13 +563,11 @@ class DSAdmin(SimpleLDAPObject):
                     ['nsslapd-directory'])
                 self.dbdir = os.path.dirname(ent.getValue('nsslapd-directory'))
             except (ldap.INSUFFICIENT_ACCESS, ldap.CONNECT_ERROR, NoSuchEntryError):
-                pass  # usually means
-#                print "ignored exception"
+                log.exceptioon("Skipping exception during initialization")
             except ldap.OPERATIONS_ERROR, e:
-                print "caught exception ", e
-                print "Probably Active Directory, pass"
+                log.exception("Skipping exception: Probably Active Directory")
             except ldap.LDAPError, e:
-                print "caught exception ", e
+                log.exception("Error during initialization")
                 raise
 
     def __localinit__(self):
@@ -579,8 +584,8 @@ class DSAdmin(SimpleLDAPObject):
             if ent:
                 self.binddn = ent.dn
             else:
-                print "Error: could not find %s under %s" % (
-                    self.binddn, DSAdmin.CFGSUFFIX)
+                log.error("Error: could not find %s under %s" % (
+                    self.binddn, DSAdmin.CFGSUFFIX))
         if not self.nobind:
             needtls = False
             while True:
@@ -694,7 +699,7 @@ class DSAdmin(SimpleLDAPObject):
             while not done and line:
                 lastLine = line
                 if verbose:
-                    print line.strip()
+                    log.debug("current line: %r" % line.strip())
                 if line.find(cmdPat) >= 0:
                     started += 1
                     if started == 2:
@@ -709,9 +714,8 @@ class DSAdmin(SimpleLDAPObject):
                 line = logfp.readline()
             if line.find("PR_Bind") >= 0:
                 # server port conflicts with another one, just report and punt
-                print lastLine.strip()
-                print "This server cannot be started until the other server on this"
-                print "port is shutdown"
+                log.debug("last line: %r" % lastLine.strip())
+                log.warn("This server cannot be started until the other server on this port is shutdown")
                 done = True
             if not done:
                 time.sleep(2)
@@ -720,33 +724,30 @@ class DSAdmin(SimpleLDAPObject):
         if started < 2:
             now = int(time.time())
             if now > timeout:
-                print "Probable timeout: timeout=%d now=%d" % (timeout, now)
-            if verbose:
-                print "Error: could not %s server %s %s: %d" % (
-                    cmd, self.sroot, self.inst, rc)
+                log.warn(
+                    "Probable timeout: timeout=%d now=%d" % (timeout, now))
+
+            log.error("Error: could not %s server %s %s: %d" % (
+                      cmd, self.sroot, self.inst, rc))
             return 1
         else:
-            if verbose:
-                print "%s was successful for %s %s" % (
-                    cmd, self.sroot, self.inst)
+            log.info("%s was successful for %s %s" % (
+                     cmd, self.sroot, self.inst))
             if cmd == 'start':
                 self.__localinit__()
         return 0
 
     def stop(self, verbose=False, timeout=0):
         if not self.isLocal and hasattr(self, 'asport'):
-            if verbose:
-                print "stopping remote server ", self
+            log.info("stopping remote server ", self)
             self.unbind()
-            if verbose:
-                print "closed remote server ", self
+            log.info("closed remote server ", self)
             cgiargs = {}
             rc = DSAdmin.cgiPost(self.host, self.asport, self.cfgdsuser,
                                  self.cfgdspwd,
                                  "/slapd-%s/Tasks/Operation/stop" % self.inst,
                                  verbose, cgiargs)
-            if verbose:
-                print "stopped remote server %s rc = %d" % (self, rc)
+            log.info("stopped remote server %s rc = %d" % (self, rc))
             return rc
         else:
             return self.serverCmd('stop', verbose, timeout)
@@ -791,8 +792,8 @@ class DSAdmin(SimpleLDAPObject):
         while not done:
             entry = self.getEntry(
                 dn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
-            if verbose:
-                print entry
+            log.debug("task entry %r" % entry)
+
             if entry.nsTaskExitCode:
                 exitCode = int(entry.nsTaskExitCode)
                 done = True
@@ -823,12 +824,12 @@ class DSAdmin(SimpleLDAPObject):
 
         if rc:
             if verbose:
-                print "Error: import task %s for file %s exited with %d" % (
-                    cn, ldiffile, rc)
+                log.error("Error: import task %s for file %s exited with %d" % (
+                    cn, ldiffile, rc))
         else:
             if verbose:
-                print "Import task %s for file %s completed successfully" % (
-                    cn, ldiffile)
+                log.info("Import task %s for file %s completed successfully" % (
+                    cn, ldiffile))
         return rc
 
     def exportLDIF(self, ldiffile, suffix, be=None, forrepl=False, verbose=False):
@@ -849,12 +850,12 @@ class DSAdmin(SimpleLDAPObject):
 
         if rc:
             if verbose:
-                print "Error: export task %s for file %s exited with %d" % (
-                    cn, ldiffile, rc)
+                log.error("Error: export task %s for file %s exited with %d" % (
+                    cn, ldiffile, rc))
         else:
             if verbose:
-                print "Export task %s for file %s completed successfully" % (
-                    cn, ldiffile)
+                log.info("Export task %s for file %s completed successfully" % (
+                    cn, ldiffile))
         return rc
 
     def createIndex(self, suffix, attr, verbose=False):
@@ -873,12 +874,12 @@ class DSAdmin(SimpleLDAPObject):
 
         if rc:
             if verbose:
-                print "Error: index task %s for file %s exited with %d" % (
-                    cn, ldiffile, rc)
+                log.error("Error: index task %s for file %s exited with %d" % (
+                    cn, ldiffile, rc))
         else:
             if verbose:
-                print "Index task %s for file %s completed successfully" % (
-                    cn, ldiffile)
+                log.info("Index task %s for file %s completed successfully" % (
+                    cn, ldiffile))
         return rc
 
     def fixupMemberOf(self, suffix, filt=None, verbose=False):
@@ -894,10 +895,10 @@ class DSAdmin(SimpleLDAPObject):
 
         if rc:
             if verbose:
-                print "Error: fixupMemberOf task %s for basedn %s exited with %d" % (cn, suffix, rc)
+                log.error("Error: fixupMemberOf task %s for basedn %s exited with %d" % (cn, suffix, rc))
         else:
             if verbose:
-                print "fixupMemberOf task %s for basedn %s completed successfully" % (cn, suffix)
+                log.info("fixupMemberOf task %s for basedn %s completed successfully" % (cn, suffix))
         return rc
 
     def addLDIF(self, input_file, cont=False):
@@ -925,8 +926,7 @@ class DSAdmin(SimpleLDAPObject):
                 except ldap.LDAPError, e:
                     if not self.cont:
                         raise e
-                    print "Error: could not add entry %s: error %s" % (
-                        dn, str(e))
+                    log.exception("Error: could not add entry %s" % dn)
 
         adder = LDIFAdder(input_file, self, cont)
 
@@ -947,88 +947,58 @@ class DSAdmin(SimpleLDAPObject):
                 sufs.append(quoted.strip('"'))
             else:
                 raise Exception(
-                    "Error: mapping tree entry " + ent.dn + " has no suffix")
+                    "Error: mapping tree entry %r has no suffix" % ent.dn)
         return sufs
 
-    def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase=None, verbose=False):
+    def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase='localdb', verbose=False):
         """Setup a backend and return its dn. Blank on error
 
-            FIXME: avoid duplicate backends
         """
         attrvals = attrvals or {}
         dnbase = ""
-        # if benamebase is set, try creating without appending
-        if benamebase:
-            benum = 0
-        else:
-            benum = 1
 
         # figure out what type of be based on args
         if binddn and bindpw and urls:  # its a chaining be
-            benamebase = benamebase or "chaindb"
             dnbase = DN_CHAIN
         else:  # its a ldbm be
-            benamebase = benamebase or "localdb"
             dnbase = DN_LDBM
 
-        print "benamebase: " + benamebase
         nsuffix = normalizeDN(suffix)
-        done = False
-        while not done:
-            try:
-                # if benamebase is set, benum starts at 0
-                # and the first attempt tries to create the
-                # simple benamebase. On failure benum is
-                # incremented and the suffix is appended
-                # to the cn
-                if benum:
-                    cn = benamebase + str(benum)  # e.g. localdb1
-                else:
-                    cn = benamebase
-                print "create backend with cn: %s" % cn
-                dn = "cn=" + cn + "," + dnbase
-                entry = Entry(dn)
+        try:
+            cn = benamebase
+            log.debug("create backend with cn: %s" % cn)
+            dn = "cn=" + cn + "," + dnbase
+            entry = Entry(dn)
+            entry.update({
+                'objectclass': ['top', 'extensibleObject', 'nsBackendInstance'],
+                'cn': cn,
+                'nsslapd-suffix': nsuffix
+            })
+
+            if binddn and bindpw and urls:  # its a chaining be
                 entry.update({
-                    'objectclass': ['top', 'extensibleObject', 'nsBackendInstance'],
-                    'cn': cn,
-                    'nsslapd-suffix': nsuffix
-                })
+                             'nsfarmserverurl': urls,
+                             'nsmultiplexorbinddn': binddn,
+                             'nsmultiplexorcredentials': bindpw
+                             })
+            else:  # set ldbm parameters, if any
+                pass
+                #     $entry->add('nsslapd-cachesize' => '-1');
+                #     $entry->add('nsslapd-cachememsize' => '2097152');
 
-                if binddn and bindpw and urls:  # its a chaining be
-                    entry.update({
-                                 'nsfarmserverurl': urls,
-                                 'nsmultiplexorbinddn': binddn,
-                                 'nsmultiplexorcredentials': bindpw
-                                 })
-                else:  # set ldbm parameters, if any
-                    pass
-                    #     $entry->add('nsslapd-cachesize' => '-1');
-                    #     $entry->add('nsslapd-cachememsize' => '2097152');
+            # set attrvals (but not cn, because it's in dn)
+            if attrvals:
+                for attr, val in attrvals.items():
+                    log.debug("adding %s = %s to entry %s" % (
+                              attr, val, dn))
+                    entry.setValues(attr, val)
+            log.debug("adding entry: %r" % entry)
+            self.add_s(entry)
+        except ldap.LDAPError, e:
+            log.exception("Could not add backend entry: %r" % dn)
+            raise
 
-                # set attrvals (but not cn, because it's in dn)
-                if attrvals:
-                    for attr, val in attrvals.items():
-                        if verbose:
-                            print "adding %s = %s to entry %s" % (
-                                attr, val, dn)
-                        entry.setValues(attr, val)
-                if verbose:
-                    print entry
-                self.add_s(entry)
-                done = True
-            except ldap.ALREADY_EXISTS:
-                benum += 1
-            except ldap.LDAPError, e:
-                print "Could not add backend entry " + dn, e
-                raise
-        if verbose:
-            try:
-                entry = self.getEntry(dn, ldap.SCOPE_BASE)
-                print entry
-            except NoSuchEntryError:
-                raise MissingEntryError(
-                    "Backend entry added, but could not be searched")
-
+        self._test_entry(dn, ldap.SCOPE_BASE)
         return cn
 
     def setupSuffix(self, suffix, bename, parent="", verbose=False):
@@ -1042,7 +1012,6 @@ class DSAdmin(SimpleLDAPObject):
                 you have to create:
                     - the ldap entry "o=addressbook1"
         """
-        rc = 0
         nsuffix = normalizeDN(suffix)
         #escapedn = escapeDNValue(nsuffix)
         nparent = ""
@@ -1053,15 +1022,13 @@ class DSAdmin(SimpleLDAPObject):
         try:
             entry = self.getEntry(
                 DN_MAPPING_TREE, ldap.SCOPE_SUBTREE, filt)
-            if verbose:
-                print entry
-            return rc
+            return entry
         except NoSuchEntryError:
             entry = None
 
         # fix me when we can actually used escaped DNs
         #dn = "cn=%s,cn=mapping tree,cn=config" % escapedn
-        dn = ','.join('cn="%s"' % nsuffix, DN_MAPPING_TREE)
+        dn = ','.join(('cn="%s"' % nsuffix, DN_MAPPING_TREE))
         entry = Entry(dn)
         entry.update({
             'objectclass': ['top', 'extensibleObject', 'nsMappingTree'],
@@ -1080,10 +1047,8 @@ class DSAdmin(SimpleLDAPObject):
         except ldap.LDAPError, e:
             raise LDAPError("Error adding suffix entry " + dn, e)
 
-        if verbose:
-            self._test_entry(dn, ldap.SCOPE_BASE)
-
-        return rc
+        ret = self._test_entry(dn, ldap.SCOPE_BASE)
+        return ret
 
     def _test_entry(self, dn, scope=ldap.SCOPE_BASE):
         try:
@@ -1108,7 +1073,7 @@ class DSAdmin(SimpleLDAPObject):
             raise NoSuchEntryError(
                 "Cannot find suffix in mapping tree: %r " % suffix)
         except ldap.FILTER_ERROR, e:
-            print "Error searching for", filt
+            log.error("Error searching for %r" % filt)
             raise e
 
     def getBackendsForSuffix(self, suffix, attrs=None):
@@ -1130,7 +1095,7 @@ class DSAdmin(SimpleLDAPObject):
             suffix = entry.getValue('nsslapd-suffix')
             return self.getMTEntry(suffix, attrs)
         except NoSuchEntryError:
-            print "Could not find an entry for backend", bename
+            log.warning("Could not find an entry for backend %r" % bename)
             return None
 
     def findParentSuffix(self, suffix):
@@ -1149,13 +1114,11 @@ class DSAdmin(SimpleLDAPObject):
         return ""
 
     def addSuffix(self, suffix, binddn=None, bindpw=None, urls=None, bename=None):
-        """Create a suffix and its backend.
+        """Create and return a suffix and its backend.
 
             Uses: setupBackend and SetupSuffix
             Requires: adding a matching entry in the tree
-
-            TODO: raise exception instead returning codes!
-            TODO: consider use logging instead of print
+            TODO: test return values and error codes
         """
 
         entries_backend = self.getBackendsForSuffix(suffix, ['cn'])
@@ -1164,23 +1127,21 @@ class DSAdmin(SimpleLDAPObject):
         if not entries_backend:
             bename = self.setupBackend(
                 suffix, binddn, bindpw, urls, benamebase=bename)
-            if not bename:
-                print "Couldn't create backend for", suffix
-                return -1  # ldap error code handled already
         else:  # use existing backend(s)
             benames = [entry.cn for entry in entries_backend]
-            bename = benames.pop(0)
+            bename = benames.pop(0)  # do I need to modify benames
 
-        parent = self.findParentSuffix(suffix)
-        if self.setupSuffix(suffix, bename, parent):
-            print "Couldn't create suffix for %s %s" % (bename, suffix)
-            return -1
-
-        return 0
+        try:
+            parent = self.findParentSuffix(suffix)
+            return self.setupSuffix(suffix, bename, parent)
+        except NoSuchEntryError:
+            log.exception(
+                "Couldn't create suffix for %s %s" % (bename, suffix))
+            raise
 
     def getDBStats(self, suffix, bename=''):
         if bename:
-            dn = ','.join("cn=monitor,cn=%s" % bename, DN_LDBM)
+            dn = ','.join(("cn=monitor,cn=%s" % bename, DN_LDBM))
         else:
             entries_backend = self.getBackendsForSuffix(suffix)
             dn = "cn=monitor," + entries_backend[0].dn
@@ -1434,7 +1395,7 @@ class DSAdmin(SimpleLDAPObject):
         return val
 
     def setupChainingIntermediate(self):
-        confdn = ','.join("cn=config", DN_CHAIN)
+        confdn = ','.join(("cn=config", DN_CHAIN))
         try:
             self.modify_s(confdn, [(ldap.MOD_ADD, 'nsTransmittedControl',
                                    ['2.16.840.1.113730.3.4.12', '1.3.6.1.4.1.1466.29539.12'])])
@@ -1621,15 +1582,9 @@ class DSAdmin(SimpleLDAPObject):
         return 0
 
     def setupBindDN(self, binddn, bindpw):
-        """ Create a person entry with the given dn and pwd.
-            Return 0 on success
+        """ Return - eventually creating - a person entry with the given dn and pwd.
 
-            binddn can be an entry
-
-            TODO: Could we return the newly created entry and raise
-                exception on fault?
-
-            DONE: supported uid attribute too
+            binddn can be a dsadmin.Entry
         """
         try:
             assert binddn
@@ -1657,12 +1612,12 @@ class DSAdmin(SimpleLDAPObject):
             log.warn("Entry %s already exists" % binddn)
 
         try:
-            self._test_entry(binddn, ldap.SCOPE_BASE)
+            entry = self._test_entry(binddn, ldap.SCOPE_BASE)
+            return entry
         except MissingEntryError:
             log.exception("This entry should exist!")
-            return -1
+            raise
 
-        return 0
 
     def setupWinSyncAgmt(self, args, entry):
         if 'winsync' not in args:
@@ -2205,7 +2160,7 @@ class DSAdmin(SimpleLDAPObject):
         elif tryrepl:
             print "Could not get RUV from", suffix, "entry - trying cn=replica"
             ensuffix = escapeDNValue(normalizeDN(suffix))
-            dn = ','.join("cn=replica,cn=%s" % ensuffix, DN_MAPPING_TREE)
+            dn = ','.join(("cn=replica,cn=%s" % ensuffix, DN_MAPPING_TREE))
             ents = self.search_s(dn, ldap.SCOPE_BASE, "objectclass=*", attrs)
         if ents and (len(ents) > 0):
             ent = ents[0]

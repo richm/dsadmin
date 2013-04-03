@@ -2,7 +2,6 @@
 from nose import *
 
 from dsadmin.utils import *
-
 def normalizeDN_test():
     test = [ 
         (r'dc=example,dc=com', r'dc=example,dc=com'),
@@ -25,3 +24,16 @@ def escapeDNFiltValue_test():
     for k,v in test:
         r = escapeDNFiltValue(k)
         assert r == v, "Mismatch %r vs %r" % (r,v)
+
+import socket
+def isLocalHost_test():
+    test = [ 
+        ('localhost', True), 
+        ('localhost.localdomain', True),
+        (socket.gethostname(), True),
+        ('www.google.it', False) ]
+    for k,v in test:
+        r = isLocalHost(k)
+        assert r == v, "Mismatch %r vs %r on %r" % (r,v, k)
+
+    

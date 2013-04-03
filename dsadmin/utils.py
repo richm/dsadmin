@@ -106,6 +106,9 @@ def isLocalHost(host_name):
     # first lookup ip addr
     try:
         ip_addr = socket.gethostbyname(host_name)
+        if ip_addr.startswith("127."):
+            log.trace("this ip is on loopback, retain only the first octet"
+            ip_addr = '127.'
     except socket.gaierror:
         log.debug("no ip address for %r" % host_name)
         return False
@@ -114,7 +117,7 @@ def isLocalHost(host_name):
     # local addresses
     p = my_popen(['/sbin/ifconfig', '-a'], stdout=PIPE)
     child_stdout = p.stdout.read()
-    found = ('inet addr: ' + ip_addr) in child_stdout    
+    found = ('inet addr:' + ip_addr) in child_stdout    
     p.wait()
     
     return found

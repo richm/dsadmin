@@ -4,10 +4,13 @@
 """
 import dsadmin
 from dsadmin import DSAdmin, Entry
+from dsadmin import NoSuchEntryError
 import ldap
+from ldap import *
 
 from nose import SkipTest
 from nose.tools import *
+
 import config
 from config import *
 
@@ -24,11 +27,11 @@ def setup():
 
 def tearDown():
     global conn
-    
+
     # reduce log level
     conn.setLogLevel(0)
     conn.setAccessLogLevel(0)
-    
+
     for e in conn.added_entries:
         try:
             conn.delete_s(e)
@@ -41,7 +44,6 @@ def bind_test():
 
 
 def setupBindDN_UID_test():
-    # TODO change returning the entry instead of 0
     user = {
         'binddn': 'uid=rmanager1,cn=config',
         'bindpw': 'password'
@@ -56,7 +58,6 @@ def setupBindDN_UID_test():
 
 
 def setupBindDN_CN_test():
-    # TODO change returning the entry instead of 0
     user = {
         'binddn': 'cn=rmanager1,cn=config',
         'bindpw': 'password'
@@ -94,8 +95,19 @@ def setupChangelog_full_test():
     conn.delete_s("cn=changelog5,cn=config")
 
 
+@raises(NoSuchEntryError)
+def getMTEntry_missing_test():
+    e = conn.getMTEntry('o=MISSING')
+
+
+def getMTEntry_present_test():
+    suffix = 'o=addressbook16'
+    e = conn.getMTEntry(suffix)
+    assert e, "Entry should be present %s" % suffix
+
+
 def setLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 5
+    vals = 1 << 0, 1 << 1, 1 << 2
     assert conn.setLogLevel(*vals) == sum(vals)
 
 

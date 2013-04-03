@@ -1,15 +1,15 @@
 from nose import *
 from nose.tools import *
+
 import config
 from config import log
 from config import *
 
+import ldap, time
+import dsadmin
 from dsadmin import DSAdmin, Entry
 from dsadmin import NoSuchEntryError
-import dsadmin
-import ldap
-
-
+from dsadmin import utils
 from subprocess import Popen
 
 
@@ -57,8 +57,6 @@ def drop_backend(suffix, bename=None, maxnum=50):
 #
 # Tests
 #
-
-
 
 
 def addbackend_harn(conn, name):
@@ -152,13 +150,13 @@ def setupAgreement_test():
     print dn_replica
 
 
-
-@raises(NoSuchEntryError)
-def getMTEntry_missing_test():
-    e = conn.getMTEntry('o=MISSING')
-
-
-def getMTEntry_present_test():
-    suffix = 'o=addressbook16'
-    e = conn.getMTEntry(suffix)
-    assert e, "Entry should be present %s" % suffix
+def stop_start_test():
+    # dunno why DSAdmin.start|stop writes to dirsrv error-log 
+    conn.errlog = "/tmp/dsadmin-errlog"
+    conn.stop()
+    log.info("server stopped")
+    conn.start()
+    log.info("server start")
+    time.sleep(5)
+    setup()
+    assert conn.search_s(*utils.searchs['NAMINGCONTEXTS']), "Missing namingcontexts"

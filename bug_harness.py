@@ -1,6 +1,6 @@
 from bug_harness import DSAdminHarness as DSAdmin
 from dsadmin import Entry
-from dsadmin_utils import *
+from dsadmin.tools import DSAdminTools
 """
     An harness for bug replication.
 
@@ -25,14 +25,14 @@ def get_next_replicaid(replica_id=None, replica_type=None):
     return 0
 
 
-class DSAdminHarness(DSAdmin):
+class DSAdminHarness(DSAdmin, DSAdminTools):
     """Harness wrapper around dsadmin.
 
        Specialize the DSAdmin behavior (No, I don't care about Liskov ;))
     """
-    def setupSSL(self, secport=0, sourcedir=os.environ['SECDIR'], secargs=None):
+    def setupSSL(self, secport, sourcedir=os.environ['SECDIR'], secargs=None):
         """Bug scripts requires SECDIR."""
-        return DSAdmin.setupSSL(self, secport, sourcedir, secargs)
+        return DSAdminTools.setupSSL(self, secport, sourcedir, secargs)
 
     def setupAgreement(self, repoth, args):
         """Set default replia credentials """
@@ -55,7 +55,7 @@ class DSAdminHarness(DSAdmin):
 
     def setupReplBindDN(self, binddn=REPLBINDDN, bindpw=REPLBINDPW):
         return self.setupBindDN(binddn, bindpw)
-        
+
     def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase=None, verbose=False):
         """Create a backends using the first available cn."""
         # if benamebase is set, try creating without appending
@@ -69,7 +69,7 @@ class DSAdminHarness(DSAdmin):
             benamebase = benamebase or "chaindb"
         else:  # its a ldbm be
             benamebase = benamebase or "localdb"
-            
+
         done = False
         while not done:
             # if benamebase is set, benum starts at 0
@@ -83,13 +83,10 @@ class DSAdminHarness(DSAdmin):
                 benamebase_tmp = benamebase
 
             try:
-                cn = DSAdmin.setupBackend(suffix, binddn, bindpw, urls, attrvals, benamebase, verbose)
+                cn = DSAdmin.setupBackend(suffix, binddn, bindpw,
+                                          urls, attrvals, benamebase, verbose)
                 done = True
             except ldap.ALREADY_EXISTS:
                 benum += 1
-                
+
         return cn
-
-
-
-

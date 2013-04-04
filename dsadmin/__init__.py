@@ -4,6 +4,7 @@
     IMPORTANT: Ternary operator syntax is unsupported on RHEL5
         x if cond else y #don't!
 
+    The DSAdmin class is split in various mix-ins
 
 """
 try:
@@ -35,7 +36,12 @@ from ldap.ldapobject import SimpleLDAPObject
 from ldapurl import LDAPUrl
 from ldap.cidict import cidict
 
-from dsadmin_utils import *
+# file in this package
+from dsadmin.utils import *
+from dsadmin._entry import Entry
+
+# mixin
+#from dsadmin.tools import DSAdminTools
 
 
 # replicatype @see https://access.redhat.com/knowledge/docs/en-US/Red_Hat_Directory_Server/8.1/html/Administration_Guide/Managing_Replication-Configuring-Replication-cmd.html
@@ -52,6 +58,9 @@ REPLICA_RDWR_TYPE = REPLICA_RDONLY_TYPE | REPLICA_WRONLY_TYPE
 
 DBMONATTRRE = re.compile(r'^([a-zA-Z]+)-([1-9][0-9]*)$')
 DBMONATTRRESUN = re.compile(r'^([a-zA-Z]+)-([a-zA-Z]+)$')
+
+CFGSUFFIX = "o=NetscapeRoot"
+DEFAULT_USER = "nobody"
 
 # Some DN constants
 DN_CONFIG = "cn=config"
@@ -83,164 +92,6 @@ class MissingEntryError(NoSuchEntryError):
 class  DsError(Error):
     """Generic DS Error."""
     pass
-
-
-class Entry(object):
-    """This class represents an LDAP Entry object.
-
-        An LDAP entry consists of a DN and a list of attributes.
-        Each attribute consists of a name and a *list* of values.
-        String values will be rendered badly!
-            ex. {
-                'uid': ['user01'],
-                'cn': ['User'],
-                'objectlass': [ 'person', 'inetorgperson' ]
-             }
-
-        In python-ldap, entries are returned as a list of 2-tuples.
-        Instance variables:
-          dn - string - the string DN of the entry
-          data - cidict - case insensitive dict of the attributes and values
-    """
-    # the ldif class base64 encodes some attrs which I would rather see in raw form - to
-    # encode specific attrs as base64, add them to the list below
-    ldif.safe_string_re = re.compile('^$')
-    base64_attrs = ['nsstate']
-
-    def __init__(self, entrydata):
-        """entrydata is the raw data returned from the python-ldap
-        result method, which is:
-            * a search result entry     -> (dn, {dict...} )
-            * or a reference            -> (None, reference)
-            * or None.
-
-        If creating a new empty entry, data is the string DN.
-        """
-        self.ref = None
-        if entrydata:
-            if isinstance(entrydata, tuple):
-                if entrydata[0] is None:
-                    self.ref = entrydata[1]  # continuation reference
-                else:
-                    self.dn = entrydata[0]
-                    self.data = cidict(entrydata[1])
-            elif isinstance(entrydata, basestring):
-                self.dn = entrydata
-                self.data = cidict()
-        else:
-            #
-            self.dn = ''
-            self.data = cidict()
-
-    def __nonzero__(self):
-        """This allows us to do tests like if entry: returns false if there is no data,
-        true otherwise"""
-        return self.data is not None and len(self.data) > 0
-
-    def hasAttr(self, name):
-        """Return True if this entry has an attribute named name, False otherwise"""
-        return self.data and name in self.data
-
-    def __getattr__(self, name):
-        """If name is the name of an LDAP attribute, return the first value for that
-        attribute - equivalent to getValue - this allows the use of
-            entry.cn
-        instead of
-            entry.getValue('cn')
-        This also allows us to return None if an attribute is not found rather than
-        throwing an exception"""
-        if name == 'dn' or name == 'data':
-            return self.__dict__.get(name, None)
-        return self.getValue(name)
-
-    def getValues(self, name):
-        """Get the list (array) of values for the attribute named name"""
-        return self.data.get(name, [])
-
-    def getValue(self, name):
-        """Get the first value for the attribute named name"""
-        return self.data.get(name, [None])[0]
-
-    def hasValue(self, name, val=None):
-        """True if the given attribute is present and has the given value"""
-        if not self.hasAttr(name):
-            return False
-        if not val:
-            return True
-        if isinstance(val, list):
-            return val == self.data.get(name)
-        if isinstance(val, tuple):
-            return list(val) == self.data.get(name)
-        return val in self.data.get(name)
-
-    def hasValueCase(self, name, val):
-        """True if the given attribute is present and has the given value - case insensitive value match"""
-        if not self.hasAttr(name):
-            return False
-        return val.lower() in [x.lower() for x in self.data.get(name)]
-
-    def setValue(self, name, *value):
-        """Value passed in may be a single value, several values, or a single sequence.
-        For example:
-           ent.setValue('name', 'value')
-           ent.setValue('name', 'value1', 'value2', ..., 'valueN')
-           ent.setValue('name', ['value1', 'value2', ..., 'valueN'])
-           ent.setValue('name', ('value1', 'value2', ..., 'valueN'))
-        Since *value is a tuple, we may have to extract a list or tuple from that
-        tuple as in the last two examples above"""
-        if isinstance(value[0], list) or isinstance(value[0], tuple):
-            self.data[name] = value[0]
-        else:
-            self.data[name] = value
-
-    def getAttrs(self):
-        if not self.data:
-            return []
-        return self.data.keys()
-
-    def iterAttrs(self, attrsOnly=False):
-        if attrsOnly:
-            return self.data.iterkeys()
-        else:
-            return self.data.iteritems()
-
-    setValues = setValue
-
-    def toTupleList(self):
-        """Convert the attrs and values to a list of 2-tuples.  The first element
-        of the tuple is the attribute name.  The second element is either a
-        single value or a list of values."""
-        return self.data.items()
-
-    def getref(self):
-        return self.ref
-
-    def __str__(self):
-        """Convert the Entry to its LDIF representation"""
-        return self.__repr__()
-
-    def update(self, dct):
-        """Update passthru to the data attribute."""
-        log.debug("update with %r" % dct)
-        for k, v in dct.items():
-            if hasattr(v, '__iter__'):
-                self.data[k] = v
-            else:
-                self.data[k] = [v]
-
-    def __repr__(self):
-        """Convert the Entry to its LDIF representation"""
-        sio = cStringIO.StringIO()
-        # what's all this then?  the unparse method will currently only accept
-        # a list or a dict, not a class derived from them.  self.data is a
-        # cidict, so unparse barfs on it.  I've filed a bug against python-ldap,
-        # but in the meantime, we have to convert to a plain old dict for printing
-        # I also don't want to see wrapping, so set the line width really high (1000)
-        newdata = {}
-        newdata.update(self.data)
-        ldif.LDIFWriter(
-            sio, Entry.base64_attrs, 1000).unparse(self.dn, newdata)
-        return sio.getvalue()
 
 
 class CSN(object):
@@ -501,8 +352,6 @@ class LDIFConn(ldif.LDIFParser):
 
 
 class DSAdmin(SimpleLDAPObject):
-    CFGSUFFIX = "o=NetscapeRoot"
-    DEFAULT_USER_ID = "nobody"
 
     def getDseAttr(self, attrname):
         """Return a given attribute from dse.ldif."""
@@ -514,7 +363,7 @@ class DSAdmin(SimpleLDAPObject):
                 return cnconfig.getValue(attrname)
             return None
         except IOError as err:
-            log.exception("could not read dse config file")
+            log.error("could not read dse config file")
             raise err
 
     def __initPart2(self):
@@ -637,6 +486,9 @@ class DSAdmin(SimpleLDAPObject):
         else:
             return "ldap://%s:%d/" % (self.host, self.port)
 
+    #
+    # Get entries
+    #
     def getEntry(self, *args):
         """Wrapper around SimpleLDAPObject.search. It is common to just get one entry.
 
@@ -659,6 +511,32 @@ class DSAdmin(SimpleLDAPObject):
                 raise NoSuchEntryError("Entry is None")
             return obj[0]
 
+    def _test_entry(self, dn, scope=ldap.SCOPE_BASE):
+        try:
+            entry = self.getEntry(dn, scope)
+            log.info("Found entry %s" % entry)
+            return entry
+        except NoSuchEntryError:
+            log.exception("Entry %s was added successfully, but I cannot search it" % dn)
+            raise MissingEntryError("Entry %s was added successfully, but I cannot search it" % dn)
+
+    def getMTEntry(self, suffix, attrs=None):
+        """Given a suffix, return the mapping tree entry for it.  If attrs is
+        given, only fetch those attributes, otherwise, get all attributes.
+        """
+        attrs = attrs or []
+        filtr = suffixfilt(suffix)
+        try:
+            entry = self.getEntry(
+                DN_MAPPING_TREE, ldap.SCOPE_ONELEVEL, filtr, attrs)
+            return entry
+        except NoSuchEntryError:
+            raise NoSuchEntryError(
+                "Cannot find suffix in mapping tree: %r " % suffix)
+        except ldap.FILTER_ERROR, e:
+            log.error("Error searching for %r" % filt)
+            raise e
+
     def __wrapmethods(self):
         """This wraps all methods of SimpleLDAPObject, so that we can intercept
         the methods that deal with entries.  Instead of using a raw list of tuples
@@ -668,106 +546,6 @@ class DSAdmin(SimpleLDAPObject):
             attr = getattr(self, name)
             if callable(attr):
                 setattr(self, name, wrapper(attr, name))
-
-    def serverCmd(self, cmd, verbose, timeout=120):
-        instanceDir = self.sroot + "/slapd-" + self.inst
-        errLog = instanceDir + '/logs/errors'
-        if hasattr(self, 'errlog'):
-            errLog = self.errlog
-        done = False
-        started = True
-        lastLine = ""
-        cmd = cmd.lower()
-        fullCmd = instanceDir + "/" + cmd + "-slapd"
-        if cmd == 'start':
-            cmdPat = 'slapd started.'
-        else:
-            cmdPat = 'slapd stopped.'
-
-        if "USE_GDB" in os.environ or "USE_VALGRIND" in os.environ:
-            timeout = timeout * 3
-        timeout = int(time.time()) + timeout
-        if cmd == 'stop':
-            self.unbind()
-        logfp = open(errLog, 'r')
-        logfp.seek(0, 2)  # seek to end
-        pos = logfp.tell()  # get current position
-        logfp.seek(pos, 0)  # reset the EOF flag
-        rc = os.system(fullCmd)
-        while not done and int(time.time()) < timeout:
-            line = logfp.readline()
-            while not done and line:
-                lastLine = line
-                if verbose:
-                    log.debug("current line: %r" % line.strip())
-                if line.find(cmdPat) >= 0:
-                    started += 1
-                    if started == 2:
-                        done = True
-                elif line.find("Initialization Failed") >= 0:
-                    # sometimes the server fails to start - try again
-                    rc = os.system(fullCmd)
-                elif line.find("exiting.") >= 0:
-                    # possible transient condition - try again
-                    rc = os.system(fullCmd)
-                pos = logfp.tell()
-                line = logfp.readline()
-            if line.find("PR_Bind") >= 0:
-                # server port conflicts with another one, just report and punt
-                log.debug("last line: %r" % lastLine.strip())
-                log.warn("This server cannot be started until the other server on this port is shutdown")
-                done = True
-            if not done:
-                time.sleep(2)
-                logfp.seek(pos, 0)
-        logfp.close()
-        if started < 2:
-            now = int(time.time())
-            if now > timeout:
-                log.warn(
-                    "Probable timeout: timeout=%d now=%d" % (timeout, now))
-
-            log.error("Error: could not %s server %s %s: %d" % (
-                      cmd, self.sroot, self.inst, rc))
-            return 1
-        else:
-            log.info("%s was successful for %s %s" % (
-                     cmd, self.sroot, self.inst))
-            if cmd == 'start':
-                self.__localinit__()
-        return 0
-
-    def stop(self, verbose=False, timeout=0):
-        if not self.isLocal and hasattr(self, 'asport'):
-            log.info("stopping remote server ", self)
-            self.unbind()
-            log.info("closed remote server ", self)
-            cgiargs = {}
-            rc = DSAdmin.cgiPost(self.host, self.asport, self.cfgdsuser,
-                                 self.cfgdspwd,
-                                 "/slapd-%s/Tasks/Operation/stop" % self.inst,
-                                 verbose, cgiargs)
-            log.info("stopped remote server %s rc = %d" % (self, rc))
-            return rc
-        else:
-            return self.serverCmd('stop', verbose, timeout)
-
-    def start(self, verbose=False, timeout=0):
-        if not self.isLocal and hasattr(self, 'asport'):
-            log.debug("starting remote server %s " % self)
-            cgiargs = {}
-            rc = DSAdmin.cgiPost(self.host, self.asport, self.cfgdsuser,
-                                 self.cfgdspwd,
-                                 "/slapd-%s/Tasks/Operation/start" % self.inst,
-                                 verbose, cgiargs)
-            log.debug("connecting remote server %s" % self)
-            if not rc:
-                self.__localinit__()
-            log.info("started remote server %s rc = %d" % (self, rc))
-            return rc
-        else:
-            log.debug("Starting server %r" % self)
-            return self.serverCmd('start', verbose, timeout)
 
     def startTask(self, entry, verbose=False):
         # start the task
@@ -833,12 +611,14 @@ class DSAdmin(SimpleLDAPObject):
         return rc
 
     def exportLDIF(self, ldiffile, suffix, be=None, forrepl=False, verbose=False):
-        cn = "export" + str(int(time.time()))
+        cn = "export%d" % time.time()
         dn = "cn=%s,cn=export,cn=tasks,cn=config" % cn
         entry = Entry(dn)
-        entry.setValues('objectclass', 'top', 'extensibleObject')
-        entry.setValues('cn', cn)
-        entry.setValues('nsFilename', ldiffile)
+        entry.update({
+            'objectclass': ['top', 'extensibleObject'],
+            'cn': cn,
+            'nsFilename': ldiffile
+        })
         if be:
             entry.setValues('nsInstance', be)
         else:
@@ -883,7 +663,7 @@ class DSAdmin(SimpleLDAPObject):
         return rc
 
     def fixupMemberOf(self, suffix, filt=None, verbose=False):
-        cn = "fixupmemberof" + str(int(time.time()))
+        cn = "fixupmemberof%d" % time.time()
         dn = "cn=%s,cn=memberOf task,cn=tasks,cn=config" % cn
         entry = Entry(dn)
         entry.setValues('objectclass', 'top', 'extensibleObject')
@@ -1050,32 +830,6 @@ class DSAdmin(SimpleLDAPObject):
         ret = self._test_entry(dn, ldap.SCOPE_BASE)
         return ret
 
-    def _test_entry(self, dn, scope=ldap.SCOPE_BASE):
-        try:
-            entry = self.getEntry(dn, scope)
-            log.info("Found entry %s" % entry)
-            return entry
-        except NoSuchEntryError:
-            log.exception("Entry %s was added successfully, but I cannot search it" % dn)
-            raise MissingEntryError("Entry %s was added successfully, but I cannot search it" % dn)
-
-    def getMTEntry(self, suffix, attrs=None):
-        """Given a suffix, return the mapping tree entry for it.  If attrs is
-        given, only fetch those attributes, otherwise, get all attributes.
-        """
-        attrs = attrs or []
-        filtr = suffixfilt(suffix)
-        try:
-            entry = self.getEntry(
-                DN_MAPPING_TREE, ldap.SCOPE_ONELEVEL, filtr, attrs)
-            return entry
-        except NoSuchEntryError:
-            raise NoSuchEntryError(
-                "Cannot find suffix in mapping tree: %r " % suffix)
-        except ldap.FILTER_ERROR, e:
-            log.error("Error searching for %r" % filt)
-            raise e
-
     def getBackendsForSuffix(self, suffix, attrs=None):
         # TESTME removed try..except and raise if NoSuchEntryError
         attrs = attrs or []
@@ -1125,6 +879,7 @@ class DSAdmin(SimpleLDAPObject):
         benames = []
         # no backends for this suffix yet - create one
         if not entries_backend:
+            assert bename, "Backend name should not be None"
             bename = self.setupBackend(
                 suffix, binddn, bindpw, urls, benamebase=bename)
         else:  # use existing backend(s)
@@ -1488,7 +1243,7 @@ class DSAdmin(SimpleLDAPObject):
         return self.enableChainOnUpdate(suffix, chainbe)
 
     def setupReplica(self, args):
-        """Setup a replica agreement using the following dict
+        """Setup a replica agreement on an existing suffix.
 
             args = {
                 suffix - dn of suffix
@@ -1542,7 +1297,7 @@ class DSAdmin(SimpleLDAPObject):
             rec = self.suffixes.setdefault(nsuffix, {})
             rec['dn'] = dn_replica
             rec['type'] = repltype
-            return 0
+            return {'dn': dn_replica, 'type': repltype}
 
         # If a replica does not exist
         binddnlist = []
@@ -1575,11 +1330,10 @@ class DSAdmin(SimpleLDAPObject):
         self.add_s(entry)
 
         # check if the entry exists TODO better to raise!
-        if verbose:
-            self._test_entry(dn, ldap.SCOPE_BASE)
+        self._test_entry(dn_replica, ldap.SCOPE_BASE)
 
         self.suffixes[nsuffix] = {'dn': dn_replica, 'type': repltype}
-        return 0
+        return {'dn': dn_replica, 'type': repltype}
 
     def setupBindDN(self, binddn, bindpw):
         """ Return - eventually creating - a person entry with the given dn and pwd.
@@ -1617,7 +1371,6 @@ class DSAdmin(SimpleLDAPObject):
         except MissingEntryError:
             log.exception("This entry should exist!")
             raise
-
 
     def setupWinSyncAgmt(self, args, entry):
         if 'winsync' not in args:
@@ -1800,7 +1553,8 @@ class DSAdmin(SimpleLDAPObject):
                 '0000-2359 0123456'])]
         self.modify_s(agmtdn, mod)
 
-    def findAgreementDNs(self, filt='', attrs=[]):
+    def findAgreementDNs(self, filt='', attrs=None):
+        attrs = attrs or []
         realfilt = "(objectclass=nsds5ReplicationAgreement)"
         if filt:
             realfilt = "(&%s%s)" % (realfilt, filt)
@@ -1998,11 +1752,11 @@ class DSAdmin(SimpleLDAPObject):
             log.warn("User already exists: %r " % user)
 
         # setup replica
-        self.setupReplica(repArgs)
+        ret = self.setupReplica(repArgs)
         if 'legacy' in repArgs:
             self.setupLegacyConsumer(*user)
 
-        return 0
+        return ret
 
     def subtreePwdPolicy(self, basedn, pwdpolicy, verbose=False, **pwdargs):
         args = {'basedn': basedn, 'escdn': escapeDNValue(
@@ -2072,17 +1826,14 @@ class DSAdmin(SimpleLDAPObject):
                 mods.append((ldap.MOD_REPLACE, attr, str(val)))
         self.modify_s(dn, mods)
 
-    def setupSSL(self, secport=0, sourcedir=None, secargs=None):
-        """Configure SSL support with a given certificate and restart the server.
+    def configSSL(self, secport=636, secargs=None):
+        """Configure SSL support into cn=encryption,cn=config.
 
             secargs is a dict like {
                 'nsSSLPersonalitySSL': 'Server-Cert'
             }
-
-            If sourcedir is defined, copies nss-cert files in nsslapd-certdir
-
-            TODO: why not secport=636 ?
         """
+        log.debug("configuring SSL with secargs:%r" % secargs)
         secargs = secargs or {}
 
         dn_enc = 'cn=encryption,cn=config'
@@ -2118,36 +1869,11 @@ class DSAdmin(SimpleLDAPObject):
             (ldap.MOD_REPLACE,
                 'nsslapd-secureport', str(secport))
         ]
+        log.debug("trying to modify %r with %r" % (dn_config, mod))
         self.modify_s(dn_config, mod)
 
-        # get our cert dir
-        e_config = self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)')
-        certdir = e_config.getValue('nsslapd-certdir')
-        # have to stop the server before replacing any security files
-        self.stop()
-        # allow secport for selinux
-        if secport != 636:
-            cmd = 'semanage port -a -t ldap_port_t -p tcp ' + str(secport)
-            os.system(cmd)
-
-        # eventually copy security files from source dir to our cert dir
-        if sourcedir:
-            for ff in ['cert8.db', 'key3.db', 'secmod.db', 'pin.txt', 'certmap.conf']:
-                srcf = sourcedir + '/' + ff
-                destf = certdir + '/' + ff
-                # make sure dest is writable so we can copy over it
-                try:
-                    mode = os.stat(destf).st_mode
-                    newmode = mode | 0600
-                    os.chmod(destf, newmode)
-                except Exception, e:
-                    print e
-                    pass  # oh well
-                # copy2 will copy the mode too
-                shutil.copy2(srcf, destf)
-
-        # now, restart the ds
-        self.start(True)
+        fields = 'nsslapd-security nsslapd-ssl-check-hostname'.split()
+        return self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)', fields)
 
     def getRUV(self, suffix, tryrepl=False, verbose=False):
         uuid = "ffffffff-ffffffff-ffffffff-ffffffff"
@@ -2175,589 +1901,3 @@ class DSAdmin(SimpleLDAPObject):
     # Static methods start here
     # TODO move some methods outside. This class is too big
     ###########################
-
-    @staticmethod
-    def getnewhost(args):
-        """One of the arguments to createInstance is newhost.  If this is specified, we need
-        to convert it to the fqdn.  If not given, we need to figure out what the fqdn of the
-        local host is.  This method sets newhost in args to the appropriate value and
-        returns True if newhost is the localhost, False otherwise"""
-        isLocal = False
-        if 'newhost' in args:
-            args['newhost'] = getfqdn(args['newhost'])
-            isLocal = isLocalHost(args['newhost'])
-        else:
-            isLocal = True
-            args['newhost'] = getfqdn()
-        return isLocal
-
-    @staticmethod
-    def getoldcfgdsinfo(args):
-        """Use the old style sroot/shared/config/dbswitch.conf to get the info"""
-        dbswitch = open("%s/shared/config/dbswitch.conf" % args['sroot'], 'r')
-        try:
-            matcher = re.compile(r'^directory\s+default\s+')
-            for line in dbswitch:
-                m = matcher.match(line)
-                if m:
-                    url = LDAPUrl(line[m.end():])
-                    ary = url.hostport.split(":")
-                    if len(ary) < 2:
-                        ary.append(389)
-                    else:
-                        ary[1] = int(ary[1])
-                    ary.append(url.dn)
-                    return ary
-        finally:
-            dbswitch.close()
-
-    @staticmethod
-    def getnewcfgdsinfo(args):
-        """Use the new style prefix/etc/dirsrv/admin-serv/adm.conf.
-
-            args = {'admconf': obj } where obj.ldapurl != None
-        """
-        url = LDAPUrl(args['admconf'].ldapurl)
-        ary = url.hostport.split(":")
-        if len(ary) < 2:
-            ary.append(389)
-        else:
-            ary[1] = int(ary[1])
-        ary.append(url.dn)
-        return ary
-
-    @staticmethod
-    def getcfgdsinfo(args):
-        """Returns a 3-tuple consisting of the host, port, and cfg suffix.
-
-            `args` = {
-                'cfgdshost':
-                'cfgdsport':
-                'new_style':
-            }
-        We need the host and port of the configuration directory server in order
-        to create an instance.  If this was not given, read the dbswitch.conf file
-        to get the information.  This method will raise an exception if the file
-        was not found or could not be open.  This assumes args contains the sroot
-        parameter for the server root path.  If successful, """
-        try:
-            return args['cfgdshost'], int(args['cfgdsport']), DSAdmin.CFGSUFFIX
-        except KeyError:  # if keys are missing...
-            if args['new_style']:
-                return DSAdmin.getnewcfgdsinfo(args)
-
-            return DSAdmin.getoldcfgdsinfo(args)
-
-    @staticmethod
-    def getcfgdsuserdn(cfgdn, args):
-        """If the config ds user ID was given, not the full DN, we need to figure
-        out what the full DN is.  Try to search the directory anonymously first.  If
-        that doesn't work, look in ldap.conf.  If that doesn't work, just try the
-        default DN.  This may raise a file or LDAP exception.  Returns a DSAdmin
-        object bound as either anonymous or the admin user."""
-        # create a connection to the cfg ds
-        conn = DSAdmin(args['cfgdshost'], args['cfgdsport'], "", "")
-        # if the caller gave a password, but not the cfguser DN, look it up
-        if 'cfgdspwd' in args and \
-                ('cfgdsuser' not in args or not is_a_dn(args['cfgdsuser'])):
-            if 'cfgdsuser' in args:
-                ent = conn.getEntry(cfgdn, ldap.SCOPE_SUBTREE,
-                                    "(uid=%s)" % args['cfgdsuser'],
-                                    ['dn'])
-                args['cfgdsuser'] = ent.dn
-            elif 'sroot' in args:
-                ldapconf = open(
-                    "%s/shared/config/ldap.conf" % args['sroot'], 'r')
-                for line in ldapconf:
-                    ary = line.split()  # default split is all whitespace
-                    if len(ary) > 1 and ary[0] == 'admnm':
-                        args['cfgdsuser'] = ary[-1]
-                ldapconf.close()
-            elif 'admconf' in args:
-                args['cfgdsuser'] = args['admconf'].userdn
-            elif 'cfgdsuser' in args:
-                args['cfgdsuser'] = "uid=%s,ou=Administrators,ou=TopologyManagement,%s" % \
-                    (args['cfgdsuser'], cfgdn)
-            conn.unbind()
-            conn = DSAdmin(
-                args['cfgdshost'], args['cfgdsport'], args['cfgdsuser'],
-                args['cfgdspwd'])
-        return conn
-
-    @staticmethod
-    def getserverroot(cfgconn, isLocal, args):
-        """Grab the serverroot from the instance dir of the config ds if the user
-        did not specify a server root directory"""
-        if cfgconn and 'sroot' not in args and isLocal:
-            ent = cfgconn.getEntry(
-                DN_CONFIG, ldap.SCOPE_BASE, "(objectclass=*)",
-                ['nsslapd-instancedir'])
-            if ent:
-                args['sroot'] = os.path.dirname(
-                    ent.getValue('nsslapd-instancedir'))
-
-    @staticmethod
-    def getadmindomain(isLocal, args):
-        """Get the admin domain to use."""
-        if isLocal and 'admin_domain' not in args:
-            if 'admconf' in args:
-                args['admin_domain'] = args['admconf'].admindomain
-            elif 'sroot' in args:
-                dsconf = open('%s/shared/config/ds.conf' % args['sroot'], 'r')
-                for line in dsconf:
-                    ary = line.split(":")
-                    if len(ary) > 1 and ary[0] == 'AdminDomain':
-                        args['admin_domain'] = ary[1].strip()
-                dsconf.close()
-
-    @staticmethod
-    def getadminport(cfgconn, cfgdn, args):
-        """Return a 2-tuple (asport, True) if the admin server is using SSL, False otherwise.
-
-        Get the admin server port so we can contact it via http.  We get this from
-        the configuration entry using the CFGSUFFIX and cfgconn.  Also get any other
-        information we may need from that entry.  The ."""
-        asport = 0
-        secure = False
-        if cfgconn:
-            dn = cfgdn
-            if 'admin_domain' in args:
-                dn = "cn=%s,ou=%s, %s" % (
-                    args['newhost'], args['admin_domain'], cfgdn)
-            filt = "(&(objectclass=nsAdminServer)(serverHostName=%s)" % args[
-                'newhost']
-            if 'sroot' in args:
-                filt += "(serverRoot=%s)" % args['sroot']
-            filt += ")"
-            ent = cfgconn.getEntry(
-                dn, ldap.SCOPE_SUBTREE, filt, ['serverRoot'])
-            if ent:
-                if 'sroot' not in args and ent.serverRoot:
-                    args['sroot'] = ent.serverRoot
-                if 'admin_domain' not in args:
-                    ary = ldap.explode_dn(ent.dn, 1)
-                    args['admin_domain'] = ary[-2]
-                dn = "cn=configuration, " + ent.dn
-                ent = cfgconn.getEntry(dn, ldap.SCOPE_BASE, '(objectclass=*)',
-                                       ['nsServerPort', 'nsSuiteSpotUser', 'nsServerSecurity'])
-                if ent:
-                    asport = ent.nsServerPort
-                    secure = (ent.nsServerSecurity and (
-                        ent.nsServerSecurity == 'on'))
-                    if 'newuserid' not in args:
-                        args['newuserid'] = ent.nsSuiteSpotUser
-            cfgconn.unbind()
-        return asport, secure
-
-    @staticmethod
-    def getserveruid(args):
-        if 'newuserid' not in args:
-            if 'admconf' in args:
-                args['newuserid'] = args['admconf'].SuiteSpotUserID
-            elif 'sroot' in args:
-                ssusers = open("%s/shared/config/ssusers.conf" % args['sroot'])
-                for line in ssusers:
-                    ary = line.split()
-                    if len(ary) > 1 and ary[0] == 'SuiteSpotUser':
-                        args['newuserid'] = ary[-1]
-                ssusers.close()
-        if 'newuserid' not in args:
-            args['newuserid'] = os.environ['LOGNAME']
-            if args['newuserid'] == 'root':
-                args['newuserid'] = DSAdmin.DEFAULT_USER_ID
-
-    @staticmethod
-    def cgiFake(sroot, verbose, prog, args):
-        """Run the local program prog as a CGI using the POST method."""
-        content = urllib.urlencode(args)
-        length = len(content)
-        # setup CGI environment
-        env = os.environ.copy()
-        env['REQUEST_METHOD'] = "POST"
-        env['NETSITE_ROOT'] = sroot
-        env['CONTENT_LENGTH'] = str(length)
-        progdir = os.path.dirname(prog)
-        if HASPOPEN:
-            pipe = Popen(prog, cwd=progdir, env=env,
-                         stdin=PIPE, stdout=PIPE, stderr=STDOUT)
-            child_stdin = pipe.stdin
-            child_stdout = pipe.stdout
-        else:
-            saveenv = os.environ
-            os.environ = env
-            child_stdout, child_stdin = popen2.popen2(prog)
-            os.environ = saveenv
-        child_stdin.write(content)
-        child_stdin.close()
-        for line in child_stdout:
-            if verbose:
-                sys.stdout.write(line)
-            ary = line.split(":")
-            if len(ary) > 1 and ary[0] == 'NMC_Status':
-                exitCode = ary[1].strip()
-                break
-        child_stdout.close()
-        if HASPOPEN:
-            osCode = pipe.wait()
-            print "%s returned NMC code %s and OS code %s" % (
-                prog, exitCode, osCode)
-        return exitCode
-
-    @staticmethod
-    def formatInfData(args):
-        """Format args data for input to setup or migrate taking inf style data"""
-        content = """[General]
-FullMachineName= %s
-SuiteSpotUserID= %s
-""" % (args['newhost'], args['newuserid'])
-
-        if args['have_admin']:
-            content = content + """
-ConfigDirectoryLdapURL= ldap://%s:%d/%s
-ConfigDirectoryAdminID= %s
-ConfigDirectoryAdminPwd= %s
-AdminDomain= %s
-""" % (args['cfgdshost'], args['cfgdsport'],
-       DSAdmin.CFGSUFFIX,
-       args['cfgdsuser'], args['cfgdspwd'], args['admin_domain'])
-
-        content = content + """
-
-[slapd]
-ServerPort= %s
-RootDN= %s
-RootDNPwd= %s
-ServerIdentifier= %s
-Suffix= %s
-""" % (args['newport'], args['newrootdn'], args['newrootpw'],
-       args['newinst'], args['newsuffix'])
-
-        if 'InstallLdifFile' in args:
-            content = content + """
-InstallLdifFile= %s
-""" % args['InstallLdifFile']
-        if 'AddOrgEntries' in args:
-            content = content + """
-AddOrgEntries= %s
-""" % args['AddOrgEntries']
-        if 'ConfigFile' in args:
-            for ff in args['ConfigFile']:
-                content = content + """
-ConfigFile= %s
-""" % ff
-        if 'SchemaFile' in args:
-            for ff in args['SchemaFile']:
-                content = content + """
-SchemaFile= %s
-""" % ff
-
-        if 'ldapifilepath' in args:
-            content = content + "ldapifilepath= " + args[
-                'ldapifilepath'] + "\n"
-
-        return content
-
-    @staticmethod
-    def runInfProg(prog, content, verbose):
-        """run a program that takes an .inf style file on stdin"""
-        cmd = [prog]
-        if verbose:
-            cmd.append('-ddd')
-        else:
-            cmd.extend(['-l', '/dev/null'])
-        cmd.extend(['-s', '-f', '-'])
-        print "running: %s " % cmd
-        if HASPOPEN:
-            pipe = Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=STDOUT)
-            child_stdin = pipe.stdin
-            child_stdout = pipe.stdout
-        else:
-            pipe = popen2.Popen4(cmd)
-            child_stdin = pipe.tochild
-            child_stdout = pipe.fromchild
-        child_stdin.write(content)
-        child_stdin.close()
-        while not pipe.poll():
-            (rr, wr, xr) = select.select([child_stdout], [], [], 1.0)
-            if rr and len(rr) > 0:
-                line = rr[0].readline()
-                if not line:
-                    break
-                if verbose:
-                    sys.stdout.write(line)
-            elif verbose:
-                print "timed out waiting to read from", cmd
-        child_stdout.close()
-        exitCode = pipe.wait()
-        if verbose:
-            print "%s returned exit code %s" % (prog, exitCode)
-        return exitCode
-
-    @staticmethod
-    def cgiPost(host, port, username, password, uri, verbose, secure, args=None):
-        """Post the request to the admin server.
-
-           Admin server requires authentication, so we use the auth handler classes.
-
-            NOTE: the url classes in python use the deprecated
-            base64.encodestring() function, which truncates lines,
-            causing Apache to give us a 400 Bad Request error for the
-            Authentication string.  So, we have to tell
-            base64.encodestring() not to truncate."""
-        args = args or {}
-        prefix = 'http'
-        if secure:
-            prefix = 'https'
-        hostport = host + ":" + port
-        # construct our url
-        url = '%s://%s:%s%s' % (prefix, host, port, uri)
-        # tell base64 not to truncate lines
-        savedbinsize = base64.MAXBINSIZE
-        base64.MAXBINSIZE = 256
-        # create the password manager - we don't care about the realm
-        passman = urllib2.HTTPPasswordMgrWithDefaultRealm()
-        # add our password
-        passman.add_password(None, hostport, username, password)
-        # create the auth handler
-        authhandler = urllib2.HTTPBasicAuthHandler(passman)
-        # create our url opener that handles basic auth
-        opener = urllib2.build_opener(authhandler)
-        # make admin server think we are the console
-        opener.addheaders = [('User-Agent', 'Fedora-Console/1.0')]
-        if verbose:
-            print "requesting url", url
-            sys.stdout.flush()
-        exitCode = 1
-        try:
-            req = opener.open(url, urllib.urlencode(args))
-            for line in req:
-                if verbose:
-                    print line
-                ary = line.split(":")
-                if len(ary) > 1 and ary[0] == 'NMC_Status':
-                    exitCode = ary[1].strip()
-                    break
-            req.close()
-#         except IOError, e:
-#             print e
-#             print e.code
-#             print e.headers
-#             raise
-        finally:
-            # restore binsize
-            base64.MAXBINSIZE = savedbinsize
-        return exitCode
-
-    @staticmethod
-    def createInstance(args):
-        """Create a new instance of directory server.  First, determine the hostname to use.  By
-        default, the server will be created on the localhost.  Also figure out if the given
-        hostname is the local host or not."""
-        verbose = args.get('verbose', 0)
-        isLocal = DSAdmin.getnewhost(args)
-
-        # old style or new style?
-        sroot = args.get('sroot', os.environ.get('SERVER_ROOT', None))
-        if sroot and 'sroot' not in args:
-            args['sroot'] = sroot
-        # new style - prefix or FHS?
-        prefix = args.get('prefix', os.environ.get('PREFIX', None))
-        if 'prefix' not in args:
-            args['prefix'] = (prefix or '')
-        args['new_style'] = not sroot
-
-        # do we have ds only or ds+admin?
-        if 'no_admin' not in args:
-            sbindir = get_sbin_dir(sroot, prefix)
-            if os.path.isfile(sbindir + '/setup-ds-admin.pl'):
-                args['have_admin'] = True
-
-        if 'have_admin' not in args:
-            args['have_admin'] = False
-
-        # get default values from adm.conf
-        if args['new_style'] and args['have_admin']:
-            admconf = LDIFConn(
-                args['prefix'] + "/etc/dirsrv/admin-serv/adm.conf")
-            args['admconf'] = admconf.get('')
-
-        # next, get the configuration ds host and port
-        if args['have_admin']:
-            args['cfgdshost'], args[
-                'cfgdsport'], cfgdn = DSAdmin.getcfgdsinfo(args)
-        if args['have_admin']:
-            cfgconn = DSAdmin.getcfgdsuserdn(cfgdn, args)
-        # next, get the server root if not given
-        if not args['new_style']:
-            DSAdmin.getserverroot(cfgconn, isLocal, args)
-        # next, get the admin domain
-        if args['have_admin']:
-            DSAdmin.getadmindomain(isLocal, args)
-        # next, get the admin server port and any other information - close the cfgconn
-        if args['have_admin']:
-            asport, secure = DSAdmin.getadminport(cfgconn, cfgdn, args)
-        # next, get the server user id
-        DSAdmin.getserveruid(args)
-        # fixup and verify other args
-        if 'newport' not in args:
-            args['newport'] = '389'
-        if 'newrootdn' not in args:
-            args['newrootdn'] = 'cn=directory manager'
-        if 'newsuffix' not in args:
-            args['newsuffix'] = getdefaultsuffix(args['newhost'])
-        if not isLocal or 'cfgdshost' in args:
-            if 'admin_domain' not in args:
-                args['admin_domain'] = getdomainname(args['newhost'])
-            if isLocal and 'cfgdspwd' not in args:
-                args['cfgdspwd'] = "dummy"
-            if isLocal and 'cfgdshost' not in args:
-                args['cfgdshost'] = args['newhost']
-            if isLocal and 'cfgdsport' not in args:
-                args['cfgdsport'] = 55555
-        missing = False
-        for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinst', 'newsuffix'):
-            if param not in args:
-                print "missing required argument", param
-                missing = True
-        if missing:
-            raise InvalidArgumentError("missing required arguments")
-
-        # try to connect with the given parameters
-        try:
-            newconn = DSAdmin(args['newhost'], args['newport'],
-                              args['newrootdn'], args['newrootpw'])
-            newconn.isLocal = isLocal
-            if args['have_admin']:
-                newconn.asport = asport
-                newconn.cfgdsuser = args['cfgdsuser']
-                newconn.cfgdspwd = args['cfgdspwd']
-            print "Warning: server at %s:%s already exists, returning connection to it" % \
-                  (args['newhost'], args['newport'])
-            return newconn
-        except ldap.SERVER_DOWN:
-            pass  # not running - create new one
-
-        if not isLocal or 'cfgdshost' in args:
-            for param in ('cfgdshost', 'cfgdsport', 'cfgdsuser', 'cfgdspwd', 'admin_domain'):
-                if param not in args:
-                    print "missing required argument", param
-                    missing = True
-        if not isLocal and not asport:
-            print "missing required argument admin server port"
-            missing = True
-        if missing:
-            raise InvalidArgumentError("missing required arguments")
-
-        # construct a hash table with our CGI arguments - used with cgiPost
-        # and cgiFake
-        cgiargs = {
-            'servname': args['newhost'],
-            'servport': args['newport'],
-            'rootdn': args['newrootdn'],
-            'rootpw': args['newrootpw'],
-            'servid': args['newinst'],
-            'suffix': args['newsuffix'],
-            'servuser': args['newuserid'],
-            'start_server': 1
-        }
-        if 'cfgdshost' in args:
-            cgiargs['cfg_sspt_uid'] = args['cfgdsuser']
-            cgiargs['cfg_sspt_uid_pw'] = args['cfgdspwd']
-            cgiargs['ldap_url'] = "ldap://%s:%d/%s" % (
-                args['cfgdshost'], args['cfgdsport'], cfgdn)
-            cgiargs['admin_domain'] = args['admin_domain']
-
-        if not isLocal:
-            DSAdmin.cgiPost(args['newhost'], asport, args['cfgdsuser'],
-                            args['cfgdspwd'], "/slapd/Tasks/Operation/Create", verbose,
-                            secure, cgiargs)
-        elif not args['new_style']:
-            prog = args['sroot'] + "/bin/slapd/admin/bin/ds_create"
-            if not os.access(prog, os.X_OK):
-                prog = args['sroot'] + "/bin/slapd/admin/bin/ds_newinst"
-            DSAdmin.cgiFake(args['sroot'], verbose, prog, cgiargs)
-        else:
-            prog = ''
-            if args['have_admin']:
-                prog = get_sbin_dir(sroot, prefix) + "/setup-ds-admin.pl"
-            else:
-                prog = get_sbin_dir(sroot, prefix) + "/setup-ds.pl"
-            content = DSAdmin.formatInfData(args)
-            DSAdmin.runInfProg(prog, content, verbose)
-
-        newconn = DSAdmin(args['newhost'], args['newport'],
-                          args['newrootdn'], args['newrootpw'])
-        newconn.isLocal = isLocal
-        if args['have_admin']:
-            newconn.asport = asport
-            newconn.cfgdsuser = args['cfgdsuser']
-            newconn.cfgdspwd = args['cfgdspwd']
-        return newconn
-
-    @staticmethod
-    def createAndSetupReplica(createArgs, repArgs):
-        # pass this sub two dicts - the first one is a dict suitable to create
-        # a new instance - see createInstance for more details
-        # the second is a dict suitable for replicaSetupAll - see replicaSetupAll
-        conn = DSAdmin.createInstance(createArgs)
-        if not conn:
-            print "Error: could not create server", createArgs
-            return 0
-
-        conn.replicaSetupAll(repArgs)
-        return conn
-
-
-def testit():
-    host = 'localhost'
-    port = 10200
-    binddn = "cn=directory manager"
-    bindpw = "secret12"
-
-    basedn = DN_CONFIG
-    scope = ldap.SCOPE_BASE
-    filt = "(objectclass=*)"
-
-    try:
-        m1 = DSAdmin(host, port, binddn, bindpw)
-#        filename = "%s/slapd-%s/ldif/Example.ldif" % (m1.sroot, m1.inst)
-#        m1.importLDIF(filename, "dc=example,dc=com", None, True)
-#        m1.exportLDIF('/tmp/ldif', "dc=example,dc=com", False, True)
-        print m1.sroot, m1.inst, m1.errlog
-        ent = m1.getEntry(basedn, scope, filt, None)
-        if ent:
-            print ent.passwordmaxage
-        m1 = DSAdmin.createInstance({
-                                    'cfgdshost': host,
-                                    'cfgdsport': port,
-                                    'cfgdsuser': 'admin',
-                                    'cfgdspwd': 'admin',
-                                    'newrootpw': 'password',
-                                    'newhost': host,
-                                    'newport': port + 10,
-                                    'newinst': 'm1',
-                                    'newsuffix': 'dc=example,dc=com',
-                                    'verbose': 1
-                                    })
-#     m1.stop(True)
-#     m1.start(True)
-        cn = m1.setupBackend("dc=example2,dc=com")
-        rc = m1.setupSuffix("dc=example2,dc=com", cn)
-        entry = m1.getEntry(DN_CONFIG, ldap.SCOPE_SUBTREE, "(cn=" + cn + ")")
-        print "new backend entry is:"
-        print entry
-        print entry.getValues('objectclass')
-        print entry.OBJECTCLASS
-        results = m1.search_s("cn=monitor", ldap.SCOPE_SUBTREE)
-        print results
-        results = m1.getBackendsForSuffix("dc=example,dc=com")
-        print results
-
-    except ldap.LDAPError, e:
-        print e
-
-    print "done"
-
-
-if __name__ == "__main__":
-    testit()

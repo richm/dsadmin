@@ -112,5 +112,5 @@ def setLogLevel_test():
 
 
 def setAccessLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 5
+    vals = 1 << 0, 1 << 1, 1 << 2
     assert conn.setAccessLogLevel(*vals) == sum(vals)

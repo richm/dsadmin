@@ -15,12 +15,13 @@ except ImportError:
         return p
 
 
+import dsadmin
 
 import socket
 from socket import getfqdn
 
 import ldap
-import re
+import re, os
 import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
@@ -160,8 +161,8 @@ def getdefaultsuffix(name=''):
 
 
 
-def getserveruid(args):
-    """Return the userid used from the server inspecting the following keys in args.
+def get_server_user(args):
+    """Return the username used from the server inspecting the following keys in args.
     
         'newuserid', 'admconf', 'sroot' -> ssusers.conf
         
@@ -181,12 +182,13 @@ def getserveruid(args):
         if args['newuserid'] == 'root':
             args['newuserid'] = DEFAULT_USER
 
-def getnewhost(args):
-    """One of the arguments to createInstance is newhost.  If this is specified, we need
+def update_newhost_with_fqdn(args):
+    """Replace args['newhost'] with its fqdn and returns True if local.
+    
+    One of the arguments to createInstance is newhost.  If this is specified, we need
     to convert it to the fqdn.  If not given, we need to figure out what the fqdn of the
     local host is.  This method sets newhost in args to the appropriate value and
     returns True if newhost is the localhost, False otherwise"""
-    isLocal = False
     if 'newhost' in args:
         args['newhost'] = getfqdn(args['newhost'])
         isLocal = isLocalHost(args['newhost'])
@@ -196,7 +198,9 @@ def getnewhost(args):
     return isLocal
 
 def getcfgdsuserdn(cfgdn, args):
-    """If the config ds user ID was given, not the full DN, we need to figure
+    """Return a connection to a server.
+    
+    If the config ds user ID was given, not the full DN, we need to figure
     out what the full DN is.  Try to search the directory anonymously first.  If
     that doesn't work, look in ldap.conf.  If that doesn't work, just try the
     default DN.  This may raise a file or LDAP exception.  Returns a DSAdmin
@@ -230,7 +234,7 @@ def getcfgdsuserdn(cfgdn, args):
             args['cfgdspwd'])
     return conn
 
-def getadmindomain(isLocal, args):
+def update_admin_domain(isLocal, args):
     """Get the admin domain to use."""
     if isLocal and 'admin_domain' not in args:
         if 'admconf' in args:
@@ -353,55 +357,51 @@ def getadminport(cfgconn, cfgdn, args):
 
 
 def formatInfData(args):
-    """Format args data for input to setup or migrate taking inf style data"""
+    """Format args data for input to setup or migrate taking inf style data.
+        
+        args = { 
+            newhost, newuserid, newport, newrootdn, newrootpw, newsuffix,
+            have_admin, cfgdshost, cfgdsport, cfgdsuser,cfgdspwd, 
+            InstallLdifFile, AddOrgEntries, ConfigFile, SchemaFile, ldapifilepath
+        'have_admin', 
+    """
+    args = args.copy()
+    args['CFGSUFFIX'] = dsadmin.CFGSUFFIX
+    
     content = """[General]
-FullMachineName= %s
-SuiteSpotUserID= %s
-""" % (args['newhost'], args['newuserid'])
+FullMachineName= %(newhost)s
+SuiteSpotUserID= %(newuserid)s
+""" % args
 
     if args['have_admin']:
-        content = content + """
-ConfigDirectoryLdapURL= ldap://%s:%d/%s
-ConfigDirectoryAdminID= %s
-ConfigDirectoryAdminPwd= %s
-AdminDomain= %s
-""" % (args['cfgdshost'], args['cfgdsport'],
-   dsadmin.CFGSUFFIX,
-   args['cfgdsuser'], args['cfgdspwd'], args['admin_domain'])
+        content += """
+ConfigDirectoryLdapURL= ldap://%(cfgdshost)s:%(cfgdsport)d/%(CFGSUFFIX)s
+ConfigDirectoryAdminID= %(cfgdsuser)s
+ConfigDirectoryAdminPwd= %(cfgdspwd)s
+AdminDomain= %(admin_domain)s
+""" % args
 
-    content = content + """
-
+    content += """\n\n
 [slapd]
-ServerPort= %s
-RootDN= %s
-RootDNPwd= %s
-ServerIdentifier= %s
-Suffix= %s
-""" % (args['newport'], args['newrootdn'], args['newrootpw'],
-   args['newinst'], args['newsuffix'])
+ServerPort= %(newport)s
+RootDN= %(newrootdn)s
+RootDNPwd= %(newrootpw)s
+ServerIdentifier= %(newinst)s
+Suffix= %(newsuffix)s\n""" % args
 
     if 'InstallLdifFile' in args:
-        content = content + """
-InstallLdifFile= %s
-""" % args['InstallLdifFile']
+        content += """\nInstallLdifFile= %s\n""" % args['InstallLdifFile']
     if 'AddOrgEntries' in args:
-        content = content + """
-AddOrgEntries= %s
-""" % args['AddOrgEntries']
+        content += """\nAddOrgEntries= %s\n""" % args['AddOrgEntries']
     if 'ConfigFile' in args:
         for ff in args['ConfigFile']:
-            content = content + """
-ConfigFile= %s
-""" % ff
+            content +="""\nConfigFile= %s\n""" % ff
     if 'SchemaFile' in args:
         for ff in args['SchemaFile']:
-            content = content + """
-SchemaFile= %s
-""" % ff
+            content += """\nSchemaFile= %s\n""" % ff
 
     if 'ldapifilepath' in args:
-        content = content + "ldapifilepath= " + args[
-            'ldapifilepath'] + "\n"
+        content += "\nldapifilepath=%s\n" % args['ldapifilepath'] 
 
     return content
 

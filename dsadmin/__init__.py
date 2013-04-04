@@ -41,7 +41,7 @@ from dsadmin.utils import *
 from dsadmin._entry import Entry
 
 # mixin
-from dsadmin.tools import DSAdminTools
+#from dsadmin.tools import DSAdminTools
 
 
 
@@ -352,7 +352,7 @@ class LDIFConn(ldif.LDIFParser):
         return self.dndict.get(ndn, Entry(None))
 
 
-class DSAdmin(SimpleLDAPObject, DSAdminTools):
+class DSAdmin(SimpleLDAPObject):
 
     def getDseAttr(self, attrname):
         """Return a given attribute from dse.ldif."""
@@ -880,6 +880,7 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
         benames = []
         # no backends for this suffix yet - create one
         if not entries_backend:
+            assert bename, "Backend name should not be None"
             bename = self.setupBackend(
                 suffix, binddn, bindpw, urls, benamebase=bename)
         else:  # use existing backend(s)
@@ -1243,7 +1244,7 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
         return self.enableChainOnUpdate(suffix, chainbe)
 
     def setupReplica(self, args):
-        """Setup a replica agreement using the following dict
+        """Setup a replica agreement on an existing suffix.
 
             args = {
                 suffix - dn of suffix
@@ -1297,7 +1298,7 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
             rec = self.suffixes.setdefault(nsuffix, {})
             rec['dn'] = dn_replica
             rec['type'] = repltype
-            return 0
+            return {'dn': dn_replica, 'type': repltype}
 
         # If a replica does not exist
         binddnlist = []
@@ -1330,11 +1331,10 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
         self.add_s(entry)
 
         # check if the entry exists TODO better to raise!
-        if verbose:
-            self._test_entry(dn, ldap.SCOPE_BASE)
+        self._test_entry(dn_replica, ldap.SCOPE_BASE)
 
         self.suffixes[nsuffix] = {'dn': dn_replica, 'type': repltype}
-        return 0
+        return {'dn': dn_replica, 'type': repltype}
 
     def setupBindDN(self, binddn, bindpw):
         """ Return - eventually creating - a person entry with the given dn and pwd.
@@ -1753,11 +1753,11 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
             log.warn("User already exists: %r " % user)
 
         # setup replica
-        self.setupReplica(repArgs)
+        ret = self.setupReplica(repArgs)
         if 'legacy' in repArgs:
             self.setupLegacyConsumer(*user)
 
-        return 0
+        return ret
 
     def subtreePwdPolicy(self, basedn, pwdpolicy, verbose=False, **pwdargs):
         args = {'basedn': basedn, 'escdn': escapeDNValue(
@@ -1827,18 +1827,14 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
                 mods.append((ldap.MOD_REPLACE, attr, str(val)))
         self.modify_s(dn, mods)
 
-    def setupSSL(self, secport=0, sourcedir=None, secargs=None):
-        """Configure SSL support with a given certificate and restart the server.
+    def configSSL(self, secport=636, secargs=None):
+        """Configure SSL support into cn=encryption,cn=config.
 
             secargs is a dict like {
                 'nsSSLPersonalitySSL': 'Server-Cert'
             }
-
-            If sourcedir is defined, copies nss-cert files in nsslapd-certdir
-
-            TODO: why not secport=636 ?
-            TODO: consider moving to dsadmin.tools because it restarts the server
         """
+        log.debug("configuring SSL with secargs:%r" % secargs)
         secargs = secargs or {}
 
         dn_enc = 'cn=encryption,cn=config'
@@ -1874,36 +1870,12 @@ class DSAdmin(SimpleLDAPObject, DSAdminTools):
             (ldap.MOD_REPLACE,
                 'nsslapd-secureport', str(secport))
         ]
+        log.debug("trying to modify %r with %r" % (dn_config, mod))
         self.modify_s(dn_config, mod)
+        
+        fields ='nsslapd-security nsslapd-ssl-check-hostname'.split()
+        return self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)', fields)
 
-        # get our cert dir
-        e_config = self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)')
-        certdir = e_config.getValue('nsslapd-certdir')
-        # have to stop the server before replacing any security files
-        self.stop()
-        # allow secport for selinux
-        if secport != 636:
-            cmd = 'semanage port -a -t ldap_port_t -p tcp ' + str(secport)
-            os.system(cmd)
-
-        # eventually copy security files from source dir to our cert dir
-        if sourcedir:
-            for ff in ['cert8.db', 'key3.db', 'secmod.db', 'pin.txt', 'certmap.conf']:
-                srcf = sourcedir + '/' + ff
-                destf = certdir + '/' + ff
-                # make sure dest is writable so we can copy over it
-                try:
-                    mode = os.stat(destf).st_mode
-                    newmode = mode | 0600
-                    os.chmod(destf, newmode)
-                except Exception, e:
-                    print e
-                    pass  # oh well
-                # copy2 will copy the mode too
-                shutil.copy2(srcf, destf)
-
-        # now, restart the ds
-        self.start(True)
 
     def getRUV(self, suffix, tryrepl=False, verbose=False):
         uuid = "ffffffff-ffffffff-ffffffff-ffffffff"

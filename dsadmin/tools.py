@@ -19,10 +19,15 @@ import operator
 import select, time
 
 from dsadmin.utils import *
-from dsadmin import utils
+from dsadmin import utils, DSAdmin
+
+
 import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
+
+PATH_SETUP_DS_ADMIN = "/setup-ds-admin.pl"
+PATH_SETUP_DS = "/setup-ds.pl"
 
 
 class DSAdminTools(object):
@@ -120,7 +125,7 @@ class DSAdminTools(object):
             base64.MAXBINSIZE = savedbinsize
         return exitCode
 
-
+    @staticmethod
     def serverCmd(self, cmd, verbose, timeout=120):
         """NOTE: this tries to open the log!
         """
@@ -198,7 +203,7 @@ class DSAdminTools(object):
         return 0
 
 
-
+    @staticmethod
     def stop(self, verbose=False, timeout=0):
         """Stop server or raise."""
         if not self.isLocal and hasattr(self, 'asport'):
@@ -213,8 +218,9 @@ class DSAdminTools(object):
             log.info("stopped remote server %s rc = %d" % (self, rc))
             return rc
         else:
-            return self.serverCmd('stop', verbose, timeout)
+            return DSAdminTools.serverCmd(self, 'stop', verbose, timeout)
 
+    @staticmethod
     def start(self, verbose=False, timeout=0):
         if not self.isLocal and hasattr(self, 'asport'):
             log.debug("starting remote server %s " % self)
@@ -230,7 +236,42 @@ class DSAdminTools(object):
             return rc
         else:
             log.debug("Starting server %r" % self)
-            return self.serverCmd('start', verbose, timeout)
+            return DSAdminTools.serverCmd(self, 'start', verbose, timeout)
+
+    @staticmethod
+    def setupSSL(dsadmin, secport=636, sourcedir=None, secargs=None):
+        """configure and setup SSL with a given certificate and restart the server"""
+        e = dsadmin.configSSL(secport, secargs)
+        log.info("entry is %r" % [e])
+        dn_config = e.dn
+        # get our cert dir
+        e_config = dsadmin.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)')
+        certdir = e_config.getValue('nsslapd-certdir')
+        # have to stop the server before replacing any security files
+        DSAdminTools.stop(dsadmin)
+        # allow secport for selinux
+        if secport != 636:
+            cmd = 'semanage port -a -t ldap_port_t -p tcp ' + str(secport)
+            os.system(cmd)
+
+        # eventually copy security files from source dir to our cert dir
+        if sourcedir:
+            for ff in ['cert8.db', 'key3.db', 'secmod.db', 'pin.txt', 'certmap.conf']:
+                srcf = sourcedir + '/' + ff
+                destf = certdir + '/' + ff
+                # make sure dest is writable so we can copy over it
+                try:
+                    mode = os.stat(destf).st_mode
+                    newmode = mode | 0600
+                    os.chmod(destf, newmode)
+                except Exception, e:
+                    print e
+                    pass  # oh well
+                # copy2 will copy the mode too
+                shutil.copy2(srcf, destf)
+
+        # now, restart the ds
+        DSAdminTools.start(dsadmin, True)
 
     @staticmethod
     def runInfProg(prog, content, verbose):
@@ -270,11 +311,14 @@ class DSAdminTools(object):
 
     @staticmethod
     def createInstance(args):
-        """Create a new instance of directory server.  First, determine the hostname to use.  By
+        """Create a new instance of directory server and return a connection to it.
+        
+        First, determine the hostname to use.  By
         default, the server will be created on the localhost.  Also figure out if the given
         hostname is the local host or not."""
+        cfgdn = dsadmin.CFGSUFFIX
         verbose = args.get('verbose', 0)
-        isLocal = getnewhost(args)
+        isLocal = update_newhost_with_fqdn(args)
 
         # old style or new style?
         sroot = args.get('sroot', os.environ.get('SERVER_ROOT', None))
@@ -289,7 +333,7 @@ class DSAdminTools(object):
         # do we have ds only or ds+admin?
         if 'no_admin' not in args:
             sbindir = get_sbin_dir(sroot, prefix)
-            if os.path.isfile(sbindir + '/setup-ds-admin.pl'):
+            if os.path.isfile(sbindir + PATH_SETUP_DS_ADMIN):
                 args['have_admin'] = True
 
         if 'have_admin' not in args:
@@ -303,8 +347,7 @@ class DSAdminTools(object):
 
         # next, get the configuration ds host and port
         if args['have_admin']:
-            args['cfgdshost'], args[
-                'cfgdsport'], cfgdn = getcfgdsinfo(args)
+            args['cfgdshost'], args['cfgdsport'], cfgdn = getcfgdsinfo(args)
         if args['have_admin']:
             cfgconn = getcfgdsuserdn(cfgdn, args)
         # next, get the server root if not given
@@ -312,12 +355,12 @@ class DSAdminTools(object):
             getserverroot(cfgconn, isLocal, args)
         # next, get the admin domain
         if args['have_admin']:
-            getadmindomain(isLocal, args)
+            update_admin_domain(isLocal, args)
         # next, get the admin server port and any other information - close the cfgconn
         if args['have_admin']:
             asport, secure = getadminport(cfgconn, cfgdn, args)
         # next, get the server user id
-        getserveruid(args)
+        get_server_user(args)
         # fixup and verify other args
         if 'newport' not in args:
             args['newport'] = '389'
@@ -388,22 +431,27 @@ class DSAdminTools(object):
             cgiargs['admin_domain'] = args['admin_domain']
 
         if not isLocal:
-            DSAdmin.cgiPost(args['newhost'], asport, args['cfgdsuser'],
+            DSAdminTools.cgiPost(args['newhost'], asport, args['cfgdsuser'],
                             args['cfgdspwd'], "/slapd/Tasks/Operation/Create", verbose,
                             secure, cgiargs)
         elif not args['new_style']:
             prog = args['sroot'] + "/bin/slapd/admin/bin/ds_create"
             if not os.access(prog, os.X_OK):
                 prog = args['sroot'] + "/bin/slapd/admin/bin/ds_newinst"
-            DSAdmin.cgiFake(args['sroot'], verbose, prog, cgiargs)
+            DSAdminTools.cgiFake(args['sroot'], verbose, prog, cgiargs)
         else:
             prog = ''
             if args['have_admin']:
-                prog = get_sbin_dir(sroot, prefix) + "/setup-ds-admin.pl"
+                prog = get_sbin_dir(sroot, prefix) + PATH_SETUP_DS_ADMIN
             else:
-                prog = get_sbin_dir(sroot, prefix) + "/setup-ds.pl"
-            content = DSAdmin.formatInfData(args)
-            DSAdmin.runInfProg(prog, content, verbose)
+                prog = get_sbin_dir(sroot, prefix) + PATH_SETUP_DS
+            
+            if not os.path.isfile(prog):
+                log.error("Can't find file: %r, removing extension" % prog)
+                prog = prog[:-3] 
+                
+            content = formatInfData(args)
+            DSAdminTools.runInfProg(prog, content, verbose)
 
         newconn = DSAdmin(args['newhost'], args['newport'],
                           args['newrootdn'], args['newrootpw'])
@@ -419,7 +467,7 @@ class DSAdminTools(object):
         # pass this sub two dicts - the first one is a dict suitable to create
         # a new instance - see createInstance for more details
         # the second is a dict suitable for replicaSetupAll - see replicaSetupAll
-        conn = DSAdmin.createInstance(createArgs)
+        conn = DSAdminTools.createInstance(createArgs)
         if not conn:
             print "Error: could not create server", createArgs
             return 0

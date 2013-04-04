@@ -61,7 +61,7 @@ DBMONATTRRE = re.compile(r'^([a-zA-Z]+)-([1-9][0-9]*)$')
 DBMONATTRRESUN = re.compile(r'^([a-zA-Z]+)-([a-zA-Z]+)$')
 
 CFGSUFFIX = "o=NetscapeRoot"
-DEFAULT_USER_ID = "nobody"
+DEFAULT_USER = "nobody"
 
 # Some DN constants
 DN_CONFIG = "cn=config"

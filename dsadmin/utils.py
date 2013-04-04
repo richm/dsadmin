@@ -17,11 +17,14 @@ except ImportError:
 
 
 import socket
+from socket import getfqdn
+
 import ldap
 import re
 import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
+
 
 #
 # Decorator
@@ -37,7 +40,7 @@ def static_var(varname, value):
 #
 # constants
 #
-DEFAULT_USER_ID = "nobody"
+DEFAULT_USER = "nobody"
 #
 # Various searchs to be used in getEntry
 #   eg getEntry(*searchs['NAMINGCONTEXTS'])
@@ -49,6 +52,9 @@ searchs = {
 #
 # Utilities
 #
+def is_a_dn(dn):
+    """Returns True if the given string is a DN, False otherwise."""
+    return (dn.find("=") > 0)
 
 
 def normalizeDN(dn, usespace=False):
@@ -90,6 +96,16 @@ def suffixfilt(suffix):
     filt = '(|(cn=%s)(cn=%s)(cn=%s)(cn="%s")(cn="%s")(cn=%s)(cn="%s"))' % (escapesuffix, nsuffix, spacesuffix, nsuffix, spacesuffix, suffix, suffix)
     return filt
 
+#
+# path tools
+#
+def get_sbin_dir(sroot, prefix):
+    if sroot:
+        return "%s/bin/slapd/admin/bin" % sroot
+    elif prefix:
+        return "%s/sbin" % prefix
+    return "/usr/sbin"
+
 
 #
 # functions using sockets
@@ -107,7 +123,7 @@ def isLocalHost(host_name):
     try:
         ip_addr = socket.gethostbyname(host_name)
         if ip_addr.startswith("127."):
-            log.trace("this ip is on loopback, retain only the first octet"
+            log.debug("this ip is on loopback, retain only the first octet")
             ip_addr = '127.'
     except socket.gaierror:
         log.debug("no ip address for %r" % host_name)
@@ -122,10 +138,6 @@ def isLocalHost(host_name):
     
     return found
 
-
-def getfqdn(name=''):
-    """TODO why not just use socket.getfqdn?"""
-    return socket.getfqdn(name)
 
 
 def getdomainname(name=''):
@@ -145,17 +157,7 @@ def getdefaultsuffix(name=''):
         return 'dc=localdomain'
 
 
-def is_a_dn(dn):
-    """Returns True if the given string is a DN, False otherwise."""
-    return (dn.find("=") > 0)
 
-
-def get_sbin_dir(sroot, prefix):
-    if sroot:
-        return "%s/bin/slapd/admin/bin" % sroot
-    elif prefix:
-        return "%s/sbin" % prefix
-    return "/usr/sbin"
 
 
 def getserveruid(args):
@@ -177,7 +179,7 @@ def getserveruid(args):
     if 'newuserid' not in args:
         args['newuserid'] = os.environ['LOGNAME']
         if args['newuserid'] == 'root':
-            args['newuserid'] = DEFAULT_USER_ID
+            args['newuserid'] = DEFAULT_USER
 
 def getnewhost(args):
     """One of the arguments to createInstance is newhost.  If this is specified, we need

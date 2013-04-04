@@ -17,10 +17,10 @@ Test with:
 
 structure
 =========
-
+```python
 dsadmin/
-|-- \_entry.py 		- the Entry class 
-|-- \_\_init\_\_.py	- core module, involving only ldap commands
+|-- _entry.py 		- the Entry class 
+|-- __init__.py	- core module, involving only ldap commands
 |-- tools.py		- methods involving stuff outside ldap (eg. copy, start/stop, ...)
 |-- utils.py		- static methods for mangling strings, formatting text and so on
-
+```

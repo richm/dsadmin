@@ -5,7 +5,9 @@ import config
 from config import log
 from config import *
 
-import ldap, time, sys
+import ldap
+import time
+import sys
 import dsadmin
 from dsadmin import DSAdmin, Entry
 from dsadmin import NoSuchEntryError
@@ -18,6 +20,7 @@ conn = None
 added_entries = None
 added_backends = None
 
+
 def setup():
     global conn
     conn = DSAdmin(**config.auth)
@@ -26,10 +29,11 @@ def setup():
     conn.added_backends = set(['o=mockbe1'])
     conn.added_replicas = []
 
+
 def setup_backend():
     global conn
     addbackend_harn(conn, 'addressbook6')
-    
+
 
 def teardown():
     global conn
@@ -40,40 +44,41 @@ def teardown():
         try:
             drop_backend(suffix)
         except:
-            log.exception("error removing %r"% suffix)
+            log.exception("error removing %r" % suffix)
     for r in conn.added_replicas:
         try:
             drop_backend(suffix=None, bename=r)
         except:
-            log.exception("error removing %r"% r)
+            log.exception("error removing %r" % r)
 
 
 def drop_backend(suffix, bename=None, maxnum=50):
     global conn
     if not bename:
-        bename = [x.dn for x in conn.getBackendsForSuffix(suffix) ]   
+        bename = [x.dn for x in conn.getBackendsForSuffix(suffix)]
     assert bename, "Missing bename for %r" % suffix
     if not hasattr(bename, '__iter__'):
-        bename = [ ','.join(['cn=%s' % bename, dsadmin.DN_LDBM]) ]
+        bename = [','.join(['cn=%s' % bename, dsadmin.DN_LDBM])]
     for be in bename:
         log.debug("removing entry from %r" % be)
-        leaves = [x.dn for x in conn.search_s(be, ldap.SCOPE_SUBTREE, '(objectclass=*)', ['cn']) ]
+        leaves = [x.dn for x in conn.search_s(
+            be, ldap.SCOPE_SUBTREE, '(objectclass=*)', ['cn'])]
         # start deleting the leaves - which have the max number of ","
-        leaves.sort(key=lambda x:x.count(",")) 
-        while leaves and maxnum:        
+        leaves.sort(key=lambda x: x.count(","))
+        while leaves and maxnum:
             # to avoid infinite loops
             # limit the iterations
-            maxnum-= 1
+            maxnum -= 1
             try:
                 log.debug("removing %s" % leaves[-1])
                 conn.delete_s(leaves[-1])
                 leaves.pop()
             except:
                 leaves.insert(0, leaves.pop())
-        
+
         if not maxnum:
             raise Exception("BAD")
-    
+
 
 #
 # Tests
@@ -93,7 +98,7 @@ def addbackend_harn(conn, name):
         raise
     finally:
         conn.added_backends.add(suffix)
-        
+
     conn.add(e)
     conn.added_entries.append(e.dn)
 
@@ -105,21 +110,19 @@ def setupBackend_ok_test():
     except ldap.ALREADY_EXISTS:
         raise
     finally:
-        conn.added_backends.add('o=mockbe1')        
-        
+        conn.added_backends.add('o=mockbe1')
 
-    
 
 @raises(ldap.ALREADY_EXISTS)
 def setupBackend_double_test():
-    be1 = conn.setupBackend('o=mockbe2',  benamebase='mockbe2')
+    be1 = conn.setupBackend('o=mockbe2', benamebase='mockbe2')
     conn.added_backends.add('o=mockbe2')
-    be11 = conn.setupBackend('o=mockbe2',  benamebase='mockbe2')
+    be11 = conn.setupBackend('o=mockbe2', benamebase='mockbe2')
+
 
 def addsuffix_test():
     addbackend_harn(conn, 'addressbook16')
     conn.added_backends.add('o=addressbook16')
-
 
 
 def addreplica_write_test():
@@ -138,9 +141,6 @@ def addreplica_write_test():
     ret = conn.replicaSetupAll(replica)
     conn.added_replicas.append(ret['dn'])
     assert ret != -1, "Error in setup replica: %s" % ret
-
-
-
 
 
 def prepare_master_replica_test():
@@ -176,7 +176,7 @@ def setupAgreement_test():
 
 
 def stop_start_test():
-    # dunno why DSAdmin.start|stop writes to dirsrv error-log 
+    # dunno why DSAdmin.start|stop writes to dirsrv error-log
     conn.errlog = "/tmp/dsadmin-errlog"
     DSAdminTools.stop(conn)
     log.info("server stopped")
@@ -184,9 +184,10 @@ def stop_start_test():
     log.info("server start")
     time.sleep(5)
     setup()
-    assert conn.search_s(*utils.searchs['NAMINGCONTEXTS']), "Missing namingcontexts"
-    
-    
+    assert conn.search_s(
+        *utils.searchs['NAMINGCONTEXTS']), "Missing namingcontexts"
+
+
 def setupSSL_test():
     ssl_args = {
         'secport': 636,
@@ -195,19 +196,17 @@ def setupSSL_test():
     }
     cert_dir = conn.getDseAttr('nsslapd-certdir')
     assert cert_dir, "Cannot retrieve cert dir"
-    
+
     log.info("Initialize the cert store with an empty password")
-    fd_null = open('/dev/null','w')
+    fd_null = open('/dev/null', 'w')
     open('%s/pin.txt' % cert_dir, 'w').close()
-    cmd_initialize = 'certutil -d %s -N -f %s/pin.txt' % (cert_dir,cert_dir)
+    cmd_initialize = 'certutil -d %s -N -f %s/pin.txt' % (cert_dir, cert_dir)
     Popen(cmd_initialize.split(), stderr=fd_null)
-    
+
     log.info("Creating a self-signed cert for the server in %r" % cert_dir)
     cmd_mkcert = 'certutil -d %s -S -n localhost  -t CTu,Cu,Cu  -s cn=localhost -x' % cert_dir
     Popen(cmd_mkcert.split(), stdin=open("/dev/urandom"), stderr=fd_null)
-    
+
     log.info("Testing ssl configuration")
     ssl_args.update({'dsadmin': conn})
     DSAdminTools.setupSSL(**ssl_args)
-
-

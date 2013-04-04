@@ -6,6 +6,7 @@ try:
     from subprocess import Popen as my_popen, PIPE
 except ImportError:
     from popen2 import popen2
+
     def my_popen(cmd_l, stdout=None):
         class MockPopenResult(object):
             def wait():
@@ -21,7 +22,8 @@ import socket
 from socket import getfqdn
 
 import ldap
-import re, os
+import re
+import os
 import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
@@ -47,12 +49,14 @@ DEFAULT_USER = "nobody"
 #   eg getEntry(*searchs['NAMINGCONTEXTS'])
 #
 searchs = {
-'NAMINGCONTEXTS': ('',ldap.SCOPE_BASE, '(objectclass=*)', ['namingcontexts'])
+    'NAMINGCONTEXTS': ('', ldap.SCOPE_BASE, '(objectclass=*)', ['namingcontexts'])
 }
 
 #
 # Utilities
 #
+
+
 def is_a_dn(dn):
     """Returns True if the given string is a DN, False otherwise."""
     return (dn.find("=") > 0)
@@ -70,7 +74,7 @@ def normalizeDN(dn, usespace=False):
 
 def escapeDNValue(dn):
     '''convert special characters in a DN into LDAPv3 escapes.
-    
+
      e.g.
     "dc=example,dc=com" -> \"dc\=example\,\ dc\=com\"'''
     for cc in (' ', '"', '+', ',', ';', '<', '>', '='):
@@ -88,7 +92,7 @@ def escapeDNFiltValue(dn):
 
 def suffixfilt(suffix):
     """Return a filter matching any possible suffix form.
-    
+
         eg. normalized, escaped, spaced...
     """
     nsuffix = normalizeDN(suffix)
@@ -100,6 +104,8 @@ def suffixfilt(suffix):
 #
 # path tools
 #
+
+
 def get_sbin_dir(sroot, prefix):
     if sroot:
         return "%s/bin/slapd/admin/bin" % sroot
@@ -113,7 +119,7 @@ def get_sbin_dir(sroot, prefix):
 #
 def isLocalHost(host_name):
     """True if host_name points to a local ip.
-    
+
         Uses gethostbyname()
     """
     # first see if this is a "well known" local hostname
@@ -134,11 +140,10 @@ def isLocalHost(host_name):
     # local addresses
     p = my_popen(['/sbin/ifconfig', '-a'], stdout=PIPE)
     child_stdout = p.stdout.read()
-    found = ('inet addr:' + ip_addr) in child_stdout    
+    found = ('inet addr:' + ip_addr) in child_stdout
     p.wait()
-    
-    return found
 
+    return found
 
 
 def getdomainname(name=''):
@@ -158,14 +163,11 @@ def getdefaultsuffix(name=''):
         return 'dc=localdomain'
 
 
-
-
-
 def get_server_user(args):
     """Return the username used from the server inspecting the following keys in args.
-    
+
         'newuserid', 'admconf', 'sroot' -> ssusers.conf
-        
+
     """
     if 'newuserid' not in args:
         if 'admconf' in args:
@@ -182,9 +184,10 @@ def get_server_user(args):
         if args['newuserid'] == 'root':
             args['newuserid'] = DEFAULT_USER
 
+
 def update_newhost_with_fqdn(args):
     """Replace args['newhost'] with its fqdn and returns True if local.
-    
+
     One of the arguments to createInstance is newhost.  If this is specified, we need
     to convert it to the fqdn.  If not given, we need to figure out what the fqdn of the
     local host is.  This method sets newhost in args to the appropriate value and
@@ -197,9 +200,10 @@ def update_newhost_with_fqdn(args):
         args['newhost'] = getfqdn()
     return isLocal
 
+
 def getcfgdsuserdn(cfgdn, args):
     """Return a connection to a server.
-    
+
     If the config ds user ID was given, not the full DN, we need to figure
     out what the full DN is.  Try to search the directory anonymously first.  If
     that doesn't work, look in ldap.conf.  If that doesn't work, just try the
@@ -234,6 +238,7 @@ def getcfgdsuserdn(cfgdn, args):
             args['cfgdspwd'])
     return conn
 
+
 def update_admin_domain(isLocal, args):
     """Get the admin domain to use."""
     if isLocal and 'admin_domain' not in args:
@@ -266,6 +271,7 @@ def getoldcfgdsinfo(args):
                 return ary
     finally:
         dbswitch.close()
+
 
 def getnewcfgdsinfo(args):
     """Use the new style prefix/etc/dirsrv/admin-serv/adm.conf.
@@ -358,16 +364,16 @@ def getadminport(cfgconn, cfgdn, args):
 
 def formatInfData(args):
     """Format args data for input to setup or migrate taking inf style data.
-        
-        args = { 
+
+        args = {
             newhost, newuserid, newport, newrootdn, newrootpw, newsuffix,
-            have_admin, cfgdshost, cfgdsport, cfgdsuser,cfgdspwd, 
+            have_admin, cfgdshost, cfgdsport, cfgdsuser,cfgdspwd,
             InstallLdifFile, AddOrgEntries, ConfigFile, SchemaFile, ldapifilepath
-        'have_admin', 
+        'have_admin',
     """
     args = args.copy()
     args['CFGSUFFIX'] = dsadmin.CFGSUFFIX
-    
+
     content = """[General]
 FullMachineName= %(newhost)s
 SuiteSpotUserID= %(newuserid)s
@@ -395,13 +401,12 @@ Suffix= %(newsuffix)s\n""" % args
         content += """\nAddOrgEntries= %s\n""" % args['AddOrgEntries']
     if 'ConfigFile' in args:
         for ff in args['ConfigFile']:
-            content +="""\nConfigFile= %s\n""" % ff
+            content += """\nConfigFile= %s\n""" % ff
     if 'SchemaFile' in args:
         for ff in args['SchemaFile']:
             content += """\nSchemaFile= %s\n""" % ff
 
     if 'ldapifilepath' in args:
-        content += "\nldapifilepath=%s\n" % args['ldapifilepath'] 
+        content += "\nldapifilepath=%s\n" % args['ldapifilepath']
 
     return content
-

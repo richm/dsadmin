@@ -16,7 +16,8 @@ import urllib
 import urllib2
 import ldap
 import operator
-import select, time
+import select
+import time
 
 from dsadmin.utils import *
 from dsadmin import utils, DSAdmin
@@ -150,13 +151,13 @@ class DSAdminTools(object):
         if cmd == 'stop':
             log.warn("unbinding before stop")
             self.unbind()
-        
+
         log.info("Setup error log")
         logfp = open(errLog, 'r')
         logfp.seek(0, os.SEEK_END)  # seek to end
         pos = logfp.tell()  # get current position
         logfp.seek(pos, os.SEEK_SET)  # reset the EOF flag
-        
+
         log.warn("Running command: %r" % fullCmd)
         rc = os.system(fullCmd)
         while not done and int(time.time()) < timeout:
@@ -202,7 +203,6 @@ class DSAdminTools(object):
                 self.__localinit__()
         return 0
 
-
     @staticmethod
     def stop(self, verbose=False, timeout=0):
         """Stop server or raise."""
@@ -245,7 +245,8 @@ class DSAdminTools(object):
         log.info("entry is %r" % [e])
         dn_config = e.dn
         # get our cert dir
-        e_config = dsadmin.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)')
+        e_config = dsadmin.getEntry(
+            dn_config, ldap.SCOPE_BASE, '(objectclass=*)')
         certdir = e_config.getValue('nsslapd-certdir')
         # have to stop the server before replacing any security files
         DSAdminTools.stop(dsadmin)
@@ -312,7 +313,7 @@ class DSAdminTools(object):
     @staticmethod
     def createInstance(args):
         """Create a new instance of directory server and return a connection to it.
-        
+
         First, determine the hostname to use.  By
         default, the server will be created on the localhost.  Also figure out if the given
         hostname is the local host or not."""
@@ -432,8 +433,8 @@ class DSAdminTools(object):
 
         if not isLocal:
             DSAdminTools.cgiPost(args['newhost'], asport, args['cfgdsuser'],
-                            args['cfgdspwd'], "/slapd/Tasks/Operation/Create", verbose,
-                            secure, cgiargs)
+                                 args['cfgdspwd'], "/slapd/Tasks/Operation/Create", verbose,
+                                 secure, cgiargs)
         elif not args['new_style']:
             prog = args['sroot'] + "/bin/slapd/admin/bin/ds_create"
             if not os.access(prog, os.X_OK):
@@ -445,11 +446,11 @@ class DSAdminTools(object):
                 prog = get_sbin_dir(sroot, prefix) + PATH_SETUP_DS_ADMIN
             else:
                 prog = get_sbin_dir(sroot, prefix) + PATH_SETUP_DS
-            
+
             if not os.path.isfile(prog):
                 log.error("Can't find file: %r, removing extension" % prog)
-                prog = prog[:-3] 
-                
+                prog = prog[:-3]
+
             content = formatInfData(args)
             DSAdminTools.runInfProg(prog, content, verbose)
 

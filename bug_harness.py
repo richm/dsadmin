@@ -55,7 +55,7 @@ class DSAdminHarness(DSAdmin, DSAdminTools):
 
     def setupReplBindDN(self, binddn=REPLBINDDN, bindpw=REPLBINDPW):
         return self.setupBindDN(binddn, bindpw)
-        
+
     def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase=None, verbose=False):
         """Create a backends using the first available cn."""
         # if benamebase is set, try creating without appending
@@ -69,7 +69,7 @@ class DSAdminHarness(DSAdmin, DSAdminTools):
             benamebase = benamebase or "chaindb"
         else:  # its a ldbm be
             benamebase = benamebase or "localdb"
-            
+
         done = False
         while not done:
             # if benamebase is set, benum starts at 0
@@ -83,13 +83,10 @@ class DSAdminHarness(DSAdmin, DSAdminTools):
                 benamebase_tmp = benamebase
 
             try:
-                cn = DSAdmin.setupBackend(suffix, binddn, bindpw, urls, attrvals, benamebase, verbose)
+                cn = DSAdmin.setupBackend(suffix, binddn, bindpw,
+                                          urls, attrvals, benamebase, verbose)
                 done = True
             except ldap.ALREADY_EXISTS:
                 benum += 1
-                
+
         return cn
-
-
-
-

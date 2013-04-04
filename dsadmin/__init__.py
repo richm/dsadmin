@@ -44,7 +44,6 @@ from dsadmin._entry import Entry
 #from dsadmin.tools import DSAdminTools
 
 
-
 # replicatype @see https://access.redhat.com/knowledge/docs/en-US/Red_Hat_Directory_Server/8.1/html/Administration_Guide/Managing_Replication-Configuring-Replication-cmd.html
 # 2 for consumers and hubs (read-only replicas)
 # 3 for both single and multi-master suppliers (read-write replicas)
@@ -1872,10 +1871,9 @@ class DSAdmin(SimpleLDAPObject):
         ]
         log.debug("trying to modify %r with %r" % (dn_config, mod))
         self.modify_s(dn_config, mod)
-        
-        fields ='nsslapd-security nsslapd-ssl-check-hostname'.split()
-        return self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)', fields)
 
+        fields = 'nsslapd-security nsslapd-ssl-check-hostname'.split()
+        return self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)', fields)
 
     def getRUV(self, suffix, tryrepl=False, verbose=False):
         uuid = "ffffffff-ffffffff-ffffffff-ffffffff"
@@ -1903,7 +1901,3 @@ class DSAdmin(SimpleLDAPObject):
     # Static methods start here
     # TODO move some methods outside. This class is too big
     ###########################
-
-
-
-

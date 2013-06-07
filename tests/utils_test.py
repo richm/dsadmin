@@ -63,4 +63,62 @@ def update_newhost_with_fqdn_test():
 
 
 def formatInfData_test():
-    formatInfData({})
+    ret = formatInfData({
+        'newhost': 'localhost.localdomain',
+        'newuserid': 'dirsrv',
+        'newport' : 12345,
+        'newrootdn': 'cn=directory manager',
+        'newrootpw': 'password',
+        'newsuffix': 'o=base1',
+        'newinstance': 'rpolli1'
+    })
+    log.info("content: %r" % ret)
+    
+
+def formatInfData_withadmin_test():
+    instance_params = {
+        'newhost': 'localhost.localdomain',
+        'newuserid': 'dirsrv',
+        'newport' : 12346,
+        'newrootdn': 'cn=directory manager',
+        'newrootpw': 'password',
+        'newsuffix': 'o=base1',
+        'newinstance': 'rpolli2',
+    }
+    admin_params = {
+        'have_admin': True,
+        'create_admin': True,
+        'admin_domain': 'example.com',
+        'cfgdshost': 'localhost',
+        'cfgdsport': 12346,
+        'cfgdsuser': 'admin',
+        'cfgdspwd': 'admin',
+
+    }
+    instance_params.update(admin_params)
+    ret = formatInfData(instance_params)
+    log.info("content: %r" % ret)
+
+def formatInfData_withconfigserver_test():
+    instance_params = {
+        'newhost': 'localhost.localdomain',
+        'newuserid': 'dirsrv',
+        'newport' : 12346,
+        'newrootdn': 'cn=directory manager',
+        'newrootpw': 'password',
+        'newsuffix': 'o=base1',
+        'newinstance': 'rpolli2',
+    }
+    admin_params = {
+        'have_admin': True,
+        'cfgdshost': 'localhost',
+        'cfgdsport': 12346,
+        'cfgdsuser': 'admin',
+        'cfgdspwd': 'admin',
+        'admin_domain': 'example.com',
+
+    }
+    instance_params.update(admin_params)
+    ret = formatInfData(instance_params)
+    log.info("content: %r" % ret)
+

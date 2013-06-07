@@ -20,9 +20,13 @@ added_entries = None
 
 def setup():
     global conn
-    conn = DSAdmin(**config.auth)
-    conn.verbose = True
-    conn.added_entries = []
+    try:
+        conn = DSAdmin(**config.auth)
+        conn.verbose = True
+        conn.added_entries = []
+    except SERVER_DOWN, e:
+        log.error("To run tests you need a working 389 instance %s" % config.auth)
+        raise e
 
 
 def tearDown():

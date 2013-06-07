@@ -1,6 +1,8 @@
 """Tools for creating and managing servers
-
+    
+    uses DSAdmin
 """
+__all__ = ['DSAdminTools']
 try:
     from subprocess import Popen, PIPE, STDOUT
     HASPOPEN = True
@@ -18,18 +20,33 @@ import ldap
 import operator
 import select
 import time
+import shutil
 
-from dsadmin.utils import *
-from dsadmin import utils, DSAdmin
+import dsadmin
+from dsadmin import InvalidArgumentError
 
+from dsadmin.utils import (
+    getcfgdsuserdn, 
+    getcfgdsinfo, 
+    getcfgdsuserdn, 
+    update_newhost_with_fqdn,
+    get_sbin_dir, get_server_user, getdomainname,
+    isLocalHost, formatInfData, getserverroot,
+    
+    update_admin_domain,getadminport,getdefaultsuffix,
+    
+    )
+from dsadmin._ldifconn import LDIFConn
+from dsadmin._constants import DN_DM
 
 import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
+# Private constants
 PATH_SETUP_DS_ADMIN = "/setup-ds-admin.pl"
 PATH_SETUP_DS = "/setup-ds.pl"
-
+PATH_ADM_CONF = "/etc/dirsrv/admin-serv/adm.conf"
 
 class DSAdminTools(object):
     """DSAdmin mix-in."""
@@ -240,7 +257,10 @@ class DSAdminTools(object):
 
     @staticmethod
     def setupSSL(dsadmin, secport=636, sourcedir=None, secargs=None):
-        """configure and setup SSL with a given certificate and restart the server"""
+        """configure and setup SSL with a given certificate and restart the server.
+        
+            See DSAdmin.configSSL for the secargs values
+        """
         e = dsadmin.configSSL(secport, secargs)
         log.info("entry is %r" % [e])
         dn_config = e.dn
@@ -252,16 +272,18 @@ class DSAdminTools(object):
         DSAdminTools.stop(dsadmin)
         # allow secport for selinux
         if secport != 636:
-            cmd = 'semanage port -a -t ldap_port_t -p tcp ' + str(secport)
+            log.debug("Configuring SELinux on port:", secport)
+            cmd = 'semanage port -a -t ldap_port_t -p tcp %s' % secport
             os.system(cmd)
 
         # eventually copy security files from source dir to our cert dir
-        if sourcedir:
+        if sourcedir:            
             for ff in ['cert8.db', 'key3.db', 'secmod.db', 'pin.txt', 'certmap.conf']:
-                srcf = sourcedir + '/' + ff
-                destf = certdir + '/' + ff
+                srcf = os.path.join(sourcedir, ff)
+                destf = os.path.join(certdir, ff)
                 # make sure dest is writable so we can copy over it
                 try:
+                    log.info("Copying security files: %s to %s" % (srcf, destf))
                     mode = os.stat(destf).st_mode
                     newmode = mode | 0600
                     os.chmod(destf, newmode)
@@ -311,25 +333,45 @@ class DSAdminTools(object):
         return exitCode
 
     @staticmethod
-    def createInstance(args):
+    def createInstance(args, verbose=0):
         """Create a new instance of directory server and return a connection to it.
 
-        First, determine the hostname to use.  By
-        default, the server will be created on the localhost.  Also figure out if the given
-        hostname is the local host or not."""
+        This function:
+        - guesses the hostname where to create the DS, using
+        localhost by default;
+        - figures out if the given hostname is the local host or not.
+        
+        @param args -  a dict with the following values {
+            # new instance compulsory values
+            'newinstance': 'rpolli',
+            'newsuffix': 'dc=example,dc=com',            
+            'newhost': 'localhost.localdomain',
+            'newport': 22389,
+            'newrootpw': 'password',            
+            
+            # optionally register instance on an admin tree
+            'have_admin': True,
+            
+            # you can configure a new dirsrv-admin
+            'setup_admin': True,
+            
+            # or you need the dirsrv-admin to be already setup
+            'cfgdshost': 'localhost.localdomain',
+            'cfgdsport': 22389,
+            'cfgdsuser': 'admin',
+            'cfgdspwd': 'admin',
+        
+        }        
+        """
         cfgdn = dsadmin.CFGSUFFIX
-        verbose = args.get('verbose', 0)
         isLocal = update_newhost_with_fqdn(args)
+        
+        # use prefix if binaries are relocated
+        sroot = args.get('sroot', '')
+        prefix = args.setdefault('prefix', '')
 
-        # old style or new style?
-        sroot = args.get('sroot', os.environ.get('SERVER_ROOT', None))
-        if sroot and 'sroot' not in args:
-            args['sroot'] = sroot
         # new style - prefix or FHS?
-        prefix = args.get('prefix', os.environ.get('PREFIX', None))
-        if 'prefix' not in args:
-            args['prefix'] = (prefix or '')
-        args['new_style'] = not sroot
+        args['new_style'] = not args.get('sroot')
 
         # do we have ds only or ds+admin?
         if 'no_admin' not in args:
@@ -337,20 +379,27 @@ class DSAdminTools(object):
             if os.path.isfile(sbindir + PATH_SETUP_DS_ADMIN):
                 args['have_admin'] = True
 
-        if 'have_admin' not in args:
-            args['have_admin'] = False
+        # set default values
+        args['have_admin'] = args.get('have_admin', False)
+        args['setup_admin'] = args.get('setup_admin', False)
 
         # get default values from adm.conf
         if args['new_style'] and args['have_admin']:
             admconf = LDIFConn(
-                args['prefix'] + "/etc/dirsrv/admin-serv/adm.conf")
+                args['prefix'] + PATH_ADM_CONF)
             args['admconf'] = admconf.get('')
 
         # next, get the configuration ds host and port
         if args['have_admin']:
             args['cfgdshost'], args['cfgdsport'], cfgdn = getcfgdsinfo(args)
-        if args['have_admin']:
+        #
+        # if a Config DS is passed, get the userdn. This creates
+        # a connection to the given DS. If you don't want to connect
+        # to this server you should pass 'setup_admin' too.
+        #
+        if args['have_admin'] and not args['setup_admin']:
             cfgconn = getcfgdsuserdn(cfgdn, args)
+            
         # next, get the server root if not given
         if not args['new_style']:
             getserverroot(cfgconn, isLocal, args)
@@ -358,17 +407,15 @@ class DSAdminTools(object):
         if args['have_admin']:
             update_admin_domain(isLocal, args)
         # next, get the admin server port and any other information - close the cfgconn
-        if args['have_admin']:
+        if args['have_admin'] and not args['setup_admin']:
             asport, secure = getadminport(cfgconn, cfgdn, args)
-        # next, get the server user id
+        # next, get the posix username
         get_server_user(args)
         # fixup and verify other args
-        if 'newport' not in args:
-            args['newport'] = '389'
-        if 'newrootdn' not in args:
-            args['newrootdn'] = 'cn=directory manager'
-        if 'newsuffix' not in args:
-            args['newsuffix'] = getdefaultsuffix(args['newhost'])
+        args['newport'] = args.get('newport', 389)
+        args['newrootdn'] = args.get('newrootdn', DN_DM)
+        args['newsuffix'] = args.get('newsuffix', getdefaultsuffix(args['newhost']))
+            
         if not isLocal or 'cfgdshost' in args:
             if 'admin_domain' not in args:
                 args['admin_domain'] = getdomainname(args['newhost'])
@@ -379,19 +426,19 @@ class DSAdminTools(object):
             if isLocal and 'cfgdsport' not in args:
                 args['cfgdsport'] = 55555
         missing = False
-        for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinst', 'newsuffix'):
+        for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinstance', 'newsuffix'):
             if param not in args:
-                print "missing required argument", param
+                log.error("missing required argument: ", param)
                 missing = True
         if missing:
             raise InvalidArgumentError("missing required arguments")
 
         # try to connect with the given parameters
         try:
-            newconn = DSAdmin(args['newhost'], args['newport'],
+            newconn = dsadmin.DSAdmin(args['newhost'], args['newport'],
                               args['newrootdn'], args['newrootpw'])
             newconn.isLocal = isLocal
-            if args['have_admin']:
+            if args['have_admin'] and not args['setup_admin']:
                 newconn.asport = asport
                 newconn.cfgdsuser = args['cfgdsuser']
                 newconn.cfgdspwd = args['cfgdspwd']
@@ -419,7 +466,7 @@ class DSAdminTools(object):
             'servport': args['newport'],
             'rootdn': args['newrootdn'],
             'rootpw': args['newrootpw'],
-            'servid': args['newinst'],
+            'servid': args['newinstance'],
             'suffix': args['newsuffix'],
             'servuser': args['newuserid'],
             'start_server': 1
@@ -436,10 +483,10 @@ class DSAdminTools(object):
                                  args['cfgdspwd'], "/slapd/Tasks/Operation/Create", verbose,
                                  secure, cgiargs)
         elif not args['new_style']:
-            prog = args['sroot'] + "/bin/slapd/admin/bin/ds_create"
+            prog = sroot + "/bin/slapd/admin/bin/ds_create"
             if not os.access(prog, os.X_OK):
-                prog = args['sroot'] + "/bin/slapd/admin/bin/ds_newinst"
-            DSAdminTools.cgiFake(args['sroot'], verbose, prog, cgiargs)
+                prog = sroot + "/bin/slapd/admin/bin/ds_newinstance"
+            DSAdminTools.cgiFake(sroot, verbose, prog, cgiargs)
         else:
             prog = ''
             if args['have_admin']:
@@ -454,10 +501,13 @@ class DSAdminTools(object):
             content = formatInfData(args)
             DSAdminTools.runInfProg(prog, content, verbose)
 
-        newconn = DSAdmin(args['newhost'], args['newport'],
+        newconn = dsadmin.DSAdmin(args['newhost'], args['newport'],
                           args['newrootdn'], args['newrootpw'])
         newconn.isLocal = isLocal
-        if args['have_admin']:
+        # Now the admin should have been created
+        # but still I should have taken all the required infos
+        # before.
+        if args['have_admin'] and not args['setup_admin']:
             newconn.asport = asport
             newconn.cfgdsuser = args['cfgdsuser']
             newconn.cfgdspwd = args['cfgdspwd']

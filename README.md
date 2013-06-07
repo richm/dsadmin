@@ -15,6 +15,13 @@ Test with:
  # sudo PYTHONPATH=$PYTHONPATH nosetests -w tests/
 
 
+Debian/Ubuntu users may need to align their setup
+to the redhat one to run all tests (or edit test configuration)
+
+for file in setup-ds setup-ds-admin remove-ds; do 
+	sudo ln -s /usr/sbin/${file}{,.pl};
+done
+
 structure
 =========
 ```python

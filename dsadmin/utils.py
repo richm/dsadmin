@@ -15,19 +15,20 @@ except ImportError:
         p.stdout, p.stdin = popen2(cmd_l)
         return p
 
-
-import dsadmin
-
-import socket
-from socket import getfqdn
-
-import ldap
 import re
 import os
 import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
+import socket
+from socket import getfqdn
+
+from ldapurl import LDAPUrl
+import ldap
+import dsadmin
+from dsadmin import DN_CONFIG
+from dsadmin._constants import *
 
 #
 # Decorator
@@ -40,15 +41,12 @@ def static_var(varname, value):
         return func
     return decorate
 
+
 #
-# constants
+# Various searches to be used in getEntry
+#   eg getEntry(*searches['NAMINGCONTEXTS'])
 #
-DEFAULT_USER = "nobody"
-#
-# Various searchs to be used in getEntry
-#   eg getEntry(*searchs['NAMINGCONTEXTS'])
-#
-searchs = {
+searches = {
     'NAMINGCONTEXTS': ('', ldap.SCOPE_BASE, '(objectclass=*)', ['namingcontexts'])
 }
 
@@ -106,7 +104,8 @@ def suffixfilt(suffix):
 #
 
 
-def get_sbin_dir(sroot, prefix):
+def get_sbin_dir(sroot=None, prefix=None):
+    """Return the sbin directory (default /usr/sbin)."""
     if sroot:
         return "%s/bin/slapd/admin/bin" % sroot
     elif prefix:
@@ -164,7 +163,7 @@ def getdefaultsuffix(name=''):
 
 
 def get_server_user(args):
-    """Return the username used from the server inspecting the following keys in args.
+    """Return the unix username used from the server inspecting the following keys in args.
 
         'newuserid', 'admconf', 'sroot' -> ssusers.conf
 
@@ -202,15 +201,20 @@ def update_newhost_with_fqdn(args):
 
 
 def getcfgdsuserdn(cfgdn, args):
-    """Return a connection to a server.
+    """Return a DSAdmin object bound anonymously or to the admin user.
 
     If the config ds user ID was given, not the full DN, we need to figure
-    out what the full DN is.  Try to search the directory anonymously first.  If
-    that doesn't work, look in ldap.conf.  If that doesn't work, just try the
-    default DN.  This may raise a file or LDAP exception.  Returns a DSAdmin
-    object bound as either anonymous or the admin user."""
+    out the full DN.  
+    
+    Try in order to:
+        1- search the directory anonymously;
+        2- look in ldap.conf;
+        3- try the default DN.
+        
+    This may raise a file or LDAP exception.
+    """
     # create a connection to the cfg ds
-    conn = DSAdmin(args['cfgdshost'], args['cfgdsport'], "", "")
+    conn = dsadmin.DSAdmin(args['cfgdshost'], args['cfgdsport'], "", "")
     # if the caller gave a password, but not the cfguser DN, look it up
     if 'cfgdspwd' in args and \
             ('cfgdsuser' not in args or not is_a_dn(args['cfgdsuser'])):
@@ -233,7 +237,7 @@ def getcfgdsuserdn(cfgdn, args):
             args['cfgdsuser'] = "uid=%s,ou=Administrators,ou=TopologyManagement,%s" % \
                 (args['cfgdsuser'], cfgdn)
         conn.unbind()
-        conn = DSAdmin(
+        conn = dsadmin.DSAdmin(
             args['cfgdshost'], args['cfgdsport'], args['cfgdsuser'],
             args['cfgdspwd'])
     return conn
@@ -273,12 +277,17 @@ def getoldcfgdsinfo(args):
         dbswitch.close()
 
 
-def getnewcfgdsinfo(args):
-    """Use the new style prefix/etc/dirsrv/admin-serv/adm.conf.
+def getnewcfgdsinfo(new_instance_arguments):
+    """Use the new style prefix /etc/dirsrv/admin-serv/adm.conf.
 
-        args = {'admconf': obj } where obj.ldapurl != None
+        new_instance_arguments = {'admconf': obj } where obj.ldapurl != None
     """
-    url = LDAPUrl(args['admconf'].ldapurl)
+    try:
+        url = LDAPUrl(new_instance_arguments['admconf'].ldapurl)
+    except AttributeError:
+        log.error("missing ldapurl attribute in new_instance_arguments: %r" % new_instance_arguments)
+        raise
+        
     ary = url.hostport.split(":")
     if len(ary) < 2:
         ary.append(389)
@@ -288,10 +297,10 @@ def getnewcfgdsinfo(args):
     return ary
 
 
-def getcfgdsinfo(args):
+def getcfgdsinfo(new_instance_arguments):
     """Returns a 3-tuple consisting of the host, port, and cfg suffix.
 
-        `args` = {
+        `new_instance_arguments` = {
             'cfgdshost':
             'cfgdsport':
             'new_style':
@@ -299,15 +308,15 @@ def getcfgdsinfo(args):
     We need the host and port of the configuration directory server in order
     to create an instance.  If this was not given, read the dbswitch.conf file
     to get the information.  This method will raise an exception if the file
-    was not found or could not be open.  This assumes args contains the sroot
+    was not found or could not be open.  This assumes new_instance_arguments contains the sroot
     parameter for the server root path.  If successful, """
     try:
-        return args['cfgdshost'], int(args['cfgdsport']), dsadmin.CFGSUFFIX
+        return new_instance_arguments['cfgdshost'], int(new_instance_arguments['cfgdsport']), dsadmin.CFGSUFFIX
     except KeyError:  # if keys are missing...
-        if args['new_style']:
-            return getnewcfgdsinfo(args)
+        if new_instance_arguments['new_style']:
+            return getnewcfgdsinfo(new_instance_arguments)
 
-        return getoldcfgdsinfo(args)
+        return getoldcfgdsinfo(new_instance_arguments)
 
 
 def getserverroot(cfgconn, isLocal, args):
@@ -363,37 +372,93 @@ def getadminport(cfgconn, cfgdn, args):
 
 
 def formatInfData(args):
-    """Format args data for input to setup or migrate taking inf style data.
+    """Return the .inf data for a silence setup via setup-ds.pl.
 
         args = {
+            # new instance values
             newhost, newuserid, newport, newrootdn, newrootpw, newsuffix,
-            have_admin, cfgdshost, cfgdsport, cfgdsuser,cfgdspwd,
+            
+            # The following parameters require to register the new instance
+            # in the admin server
+            have_admin, cfgdshost, cfgdsport, cfgdsuser,cfgdspwd, admin_domain 
+            
             InstallLdifFile, AddOrgEntries, ConfigFile, SchemaFile, ldapifilepath
-        'have_admin',
+            
+            # Setup the o=NetscapeRoot namingContext
+            setup_admin,
+        }
+        
+        @see https://access.redhat.com/site/documentation/en-US/Red_Hat_Directory_Server/8.2/html/Installation_Guide/Installation_Guide-Advanced_Configuration-Silent.html
+        [General] 
+        FullMachineName= dir.example.com 
+        SuiteSpotUserID= nobody 
+        SuiteSpotGroup= nobody 
+        AdminDomain= example.com 
+        ConfigDirectoryAdminID= admin 
+        ConfigDirectoryAdminPwd= admin 
+        ConfigDirectoryLdapURL= ldap://dir.example.com:389/o=NetscapeRoot 
+
+        [slapd] 
+        SlapdConfigForMC= Yes 
+        UseExistingMC= 0 
+        ServerPort= 389 
+        ServerIdentifier= dir 
+        Suffix= dc=example,dc=com  
+        RootDN= cn=Directory Manager 
+        RootDNPwd= secret
+        ds_bename=exampleDB 
+        AddSampleEntries= No
+
+        [admin] 
+        Port= 9830
+        ServerIpAddress= 111.11.11.11 
+        ServerAdminID= admin 
+        ServerAdminPwd= admin
+
+        
     """
     args = args.copy()
     args['CFGSUFFIX'] = dsadmin.CFGSUFFIX
 
-    content = """[General]
-FullMachineName= %(newhost)s
-SuiteSpotUserID= %(newuserid)s
-""" % args
+    content = (
+    "[General]" "\n"
+    "FullMachineName= %(newhost)s" "\n"
+    "SuiteSpotUserID= %(newuserid)s" "\n"
+    ) % args
+    
+    # by default, use groupname=username
+    if 'SuiteSpotGroup' in args:
+        content += """\nSuiteSpotGroup= %s\n"""  % args['SuiteSpotGroup']
+    else:
+        content += """\nSuiteSpotGroup= %(newuserid)s\n"""  % args
 
-    if args['have_admin']:
-        content += """
-ConfigDirectoryLdapURL= ldap://%(cfgdshost)s:%(cfgdsport)d/%(CFGSUFFIX)s
-ConfigDirectoryAdminID= %(cfgdsuser)s
-ConfigDirectoryAdminPwd= %(cfgdspwd)s
-AdminDomain= %(admin_domain)s
-""" % args
+    if args.get('have_admin'):
+        content += (
+        "AdminDomain= %(admin_domain)s" "\n"
+        "ConfigDirectoryLdapURL= ldap://%(cfgdshost)s:%(cfgdsport)d/%(CFGSUFFIX)s" "\n"
+        "ConfigDirectoryAdminID= %(cfgdsuser)s" "\n"
+        "ConfigDirectoryAdminPwd= %(cfgdspwd)s" "\n"
+        ) % args
+        
+    content += ("\n" "\n"
+        "[slapd]" "\n"
+        "ServerPort= %(newport)s" "\n"
+        "RootDN= %(newrootdn)s" "\n"
+        "RootDNPwd= %(newrootpw)s" "\n"
+        "ServerIdentifier= %(newinstance)s" "\n"
+        "Suffix= %(newsuffix)s" "\n"
+        ) % args
+    
+   
+    
+    # Create admin?
+    if args.get('setup_admin'):
+        content += (
+        "SlapdConfigForMC= Yes" "\n" 
+        "UseExistingMC= 0 " "\n"
+        )
 
-    content += """\n\n
-[slapd]
-ServerPort= %(newport)s
-RootDN= %(newrootdn)s
-RootDNPwd= %(newrootpw)s
-ServerIdentifier= %(newinst)s
-Suffix= %(newsuffix)s\n""" % args
+        
 
     if 'InstallLdifFile' in args:
         content += """\nInstallLdifFile= %s\n""" % args['InstallLdifFile']
@@ -409,4 +474,5 @@ Suffix= %(newsuffix)s\n""" % args
     if 'ldapifilepath' in args:
         content += "\nldapifilepath=%s\n" % args['ldapifilepath']
 
+    
     return content

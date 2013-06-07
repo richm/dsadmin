@@ -16,7 +16,7 @@ def setup():
 def teardown():
     global added_instances
     for instance in added_instances:
-        cmd = "remove-ds -i slapd-%s" % instance
+        cmd = "remove-ds.pl -i slapd-%s" % instance
         try:
             os.system(cmd)
         except:
@@ -42,15 +42,15 @@ def default_test():
         'newrootpw': 'password',
         'newhost': host,
         'newport': port,
-        'newinst': instance_name[0],
+        'newinstance': instance_name[0],
         'newsuffix': suffix,
-        'verbose': 1
+        'setup_admin': True,
     }
     try:
         m1 = DSAdmin(host, port, binddn, bindpw)
     except:
-        m1 = DSAdminTools.createInstance(instance_config)
-        added_instances.append(instance_config['newinst'])
+        m1 = DSAdminTools.createInstance(instance_config, verbose=1)
+        added_instances.append(instance_config['newinstance'])
 
 #        filename = "%s/slapd-%s/ldif/Example.ldif" % (m1.sroot, m1.inst)
 #        m1.importLDIF(filename, "dc=example,dc=com", None, True)
@@ -60,12 +60,12 @@ def default_test():
     if ent:
         print ent.passwordmaxage
     instance_config.update({
-                           'newinst': instance_name[1],
+                           'newinstance': instance_name[1],
                            'newport': port + 10,
 
                            })
-    m1 = DSAdminTools.createInstance(instance_config)
-    added_instances.append(instance_config['newinst'])
+    m1 = DSAdminTools.createInstance(instance_config, verbose=1)
+    added_instances.append(instance_config['newinstance'])
 #     m1.stop(True)
 #     m1.start(True)
     cn = m1.setupBackend("dc=example2,dc=com")

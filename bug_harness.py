@@ -90,3 +90,11 @@ class DSAdminHarness(DSAdmin, DSAdminTools):
                 benum += 1
 
         return cn
+
+
+    def createInstance(args):
+        # eventually set prefix
+        args.setdefault('prefix', os.environ.get('PREFIX', None))
+        args.setdefault('sroot', os.environ.get('SERVER_ROOT', None))
+        DSAdminTools.createInstance(args)
+

@@ -48,6 +48,9 @@ class Entry(object):
                     self.dn = entrydata[0]
                     self.data = cidict(entrydata[1])
             elif isinstance(entrydata, basestring):
+                if not '=' in entrydata:
+                    raise ValueError('Entry dn must contain "="')
+                    
                 self.dn = entrydata
                 self.data = cidict()
         else:
@@ -85,7 +88,10 @@ class Entry(object):
         return self.data.get(name, [None])[0]
 
     def hasValue(self, name, val=None):
-        """True if the given attribute is present and has the given value"""
+        """True if the given attribute is present and has the given value
+        
+            TODO: list comparison preserves order: should I use a set?
+        """
         if not self.hasAttr(name):
             return False
         if not val:

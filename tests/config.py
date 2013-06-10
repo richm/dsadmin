@@ -4,14 +4,14 @@ log = logging.getLogger(__name__)
 
 
 auth = {'host': 'localhost',
-        'port': 389,
+        'port': 22389,
         'binddn': 'cn=directory manager',
         'bindpw': 'password'}
 
 
 class MockDSAdmin(object):
     host = 'localhost'
-    port = 389
+    port = 22389
     sslport = 0
 
     def __str__(self):
@@ -27,8 +27,10 @@ def expect(entry, name, value):
 
 
 def entry_equals(e1, e2):
+    """compare using str()"""
     return str(e1) == str(e2)
 
 
 def dfilter(my_dict, keys):
+    """Filter a dict in a 2.4-compatible way"""
     return dict([(k, v) for k, v in my_dict.iteritems() if k in keys])

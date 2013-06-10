@@ -9,7 +9,10 @@ log = logging.getLogger(__name__)
 
 
 class TestEntry(object):
-
+    """A properly initialized Entry:
+        - accepts well-formed or empty dn and tuples;
+        - refuses empty dn
+    """
     def test_init_empty(self):
         e = Entry('')
         assert not e.dn
@@ -69,7 +72,7 @@ class TestEntry(object):
             'cn': ["replica"],
             })
         )
-        print uentry
+        log.debug("Entry created with dict:", uentry)
         # Entry.update *replaces*, so be careful with multi-valued attrs
         uentry.update({
             'nsds5replicaroot': nsuffix,

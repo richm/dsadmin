@@ -35,38 +35,27 @@ import logging
 from ldap.ldapobject import SimpleLDAPObject
 from ldapurl import LDAPUrl
 from ldap.cidict import cidict
-
+from ldap import LDAPError
 # file in this package
-from dsadmin.utils import *
+
+from dsadmin._constants import *
 from dsadmin._entry import Entry
+from dsadmin._ldifconn import LDIFConn
+from dsadmin.utils import (
+    isLocalHost, 
+    is_a_dn, 
+    normalizeDN, 
+    suffixfilt, 
+    escapeDNValue
+    )
 
 # mixin
 #from dsadmin.tools import DSAdminTools
 
-
-# replicatype @see https://access.redhat.com/knowledge/docs/en-US/Red_Hat_Directory_Server/8.1/html/Administration_Guide/Managing_Replication-Configuring-Replication-cmd.html
-# 2 for consumers and hubs (read-only replicas)
-# 3 for both single and multi-master suppliers (read-write replicas)
-# TODO: let's find a way to be consistent - eg. using bitwise operator
-(MASTER_TYPE,
- HUB_TYPE,
- LEAF_TYPE) = range(3)
-
-REPLICA_RDONLY_TYPE = 2  # CONSUMER and HUB
-REPLICA_WRONLY_TYPE = 1  # SINGLE and MULTI MASTER
-REPLICA_RDWR_TYPE = REPLICA_RDONLY_TYPE | REPLICA_WRONLY_TYPE
-
 DBMONATTRRE = re.compile(r'^([a-zA-Z]+)-([1-9][0-9]*)$')
 DBMONATTRRESUN = re.compile(r'^([a-zA-Z]+)-([a-zA-Z]+)$')
 
-CFGSUFFIX = "o=NetscapeRoot"
-DEFAULT_USER = "nobody"
 
-# Some DN constants
-DN_CONFIG = "cn=config"
-DN_LDBM = "cn=ldbm database,cn=plugins,cn=config"
-DN_MAPPING_TREE = "cn=mapping tree,cn=config"
-DN_CHAIN = "cn=chaining database,cn=plugins,cn=config"
 
 # My logger
 log = logging.getLogger(__name__)
@@ -312,44 +301,6 @@ def wrapper(f, name):
     return inner
 
 
-class LDIFConn(ldif.LDIFParser):
-    def __init__(
-        self,
-        input_file,
-        ignored_attr_types=None, max_entries=0, process_url_schemes=None
-    ):
-        """
-        See LDIFParser.__init__()
-
-        Additional Parameters:
-        all_records
-        List instance for storing parsed records
-        """
-        self.dndict = {}  # maps dn to Entry
-        self.dnlist = []  # contains entries in order read
-        myfile = input_file
-        if isinstance(input_file, basestring):
-            myfile = open(input_file, "r")
-        ldif.LDIFParser.__init__(self, myfile, ignored_attr_types,
-                                 max_entries, process_url_schemes)
-        self.parse()
-        if isinstance(input_file, basestring):
-            myfile.close()
-
-    def handle(self, dn, entry):
-        """
-        Append single record to dictionary of all records.
-        """
-        if not dn:
-            dn = ''
-        newentry = Entry((dn, entry))
-        self.dndict[normalizeDN(dn)] = newentry
-        self.dnlist.append(newentry)
-
-    def get(self, dn):
-        ndn = normalizeDN(dn)
-        return self.dndict.get(ndn, Entry(None))
-
 
 class DSAdmin(SimpleLDAPObject):
 
@@ -362,7 +313,7 @@ class DSAdmin(SimpleLDAPObject):
             if cnconfig:
                 return cnconfig.getValue(attrname)
             return None
-        except IOError as err:
+        except IOError, err: # except..as.. doedn't work on python 2.4 
             log.error("could not read dse config file")
             raise err
 
@@ -412,7 +363,7 @@ class DSAdmin(SimpleLDAPObject):
                     ['nsslapd-directory'])
                 self.dbdir = os.path.dirname(ent.getValue('nsslapd-directory'))
             except (ldap.INSUFFICIENT_ACCESS, ldap.CONNECT_ERROR, NoSuchEntryError):
-                log.exceptioon("Skipping exception during initialization")
+                log.exception("Skipping exception during initialization")
             except ldap.OPERATIONS_ERROR, e:
                 log.exception("Skipping exception: Probably Active Directory")
             except ldap.LDAPError, e:
@@ -427,14 +378,14 @@ class DSAdmin(SimpleLDAPObject):
         # see if binddn is a dn or a uid that we need to lookup
         if self.binddn and not is_a_dn(self.binddn):
             self.simple_bind_s("", "")  # anon
-            ent = self.getEntry(DSAdmin.CFGSUFFIX, ldap.SCOPE_SUBTREE,
+            ent = self.getEntry(CFGSUFFIX, ldap.SCOPE_SUBTREE,
                                 "(uid=%s)" % self.binddn,
                                 ['uid'])
             if ent:
                 self.binddn = ent.dn
             else:
                 log.error("Error: could not find %s under %s" % (
-                    self.binddn, DSAdmin.CFGSUFFIX))
+                    self.binddn, CFGSUFFIX))
         if not self.nobind:
             needtls = False
             while True:
@@ -534,7 +485,7 @@ class DSAdmin(SimpleLDAPObject):
             raise NoSuchEntryError(
                 "Cannot find suffix in mapping tree: %r " % suffix)
         except ldap.FILTER_ERROR, e:
-            log.error("Error searching for %r" % filt)
+            log.error("Error searching for %r" % filtr)
             raise e
 
     def __wrapmethods(self):
@@ -653,12 +604,10 @@ class DSAdmin(SimpleLDAPObject):
         rc = self.startTaskAndWait(entry, verbose)
 
         if rc:
-            if verbose:
-                log.error("Error: index task %s for file %s exited with %d" % (
+            log.error("Error: index task %s for file %s exited with %d" % (
                     cn, ldiffile, rc))
         else:
-            if verbose:
-                log.info("Index task %s for file %s completed successfully" % (
+            log.info("Index task %s for file %s completed successfully" % (
                     cn, ldiffile))
         return rc
 
@@ -732,7 +681,12 @@ class DSAdmin(SimpleLDAPObject):
 
     def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase='localdb', verbose=False):
         """Setup a backend and return its dn. Blank on error
-
+            @param suffix
+            @param attrvals: a dict with further params like
+                            {
+                                'nsslapd-cachememsize': '1073741824',
+                                'nsslapd-cachesize': '-1',
+                            }
         """
         attrvals = attrvals or {}
         dnbase = ""
@@ -761,21 +715,24 @@ class DSAdmin(SimpleLDAPObject):
                              'nsmultiplexorbinddn': binddn,
                              'nsmultiplexorcredentials': bindpw
                              })
-            else:  # set ldbm parameters, if any
-                pass
-                #     $entry->add('nsslapd-cachesize' => '-1');
-                #     $entry->add('nsslapd-cachememsize' => '2097152');
 
             # set attrvals (but not cn, because it's in dn)
+            # TODO do it in Entry
             if attrvals:
+                entry.update(attrvals)
+                """
                 for attr, val in attrvals.items():
                     log.debug("adding %s = %s to entry %s" % (
                               attr, val, dn))
                     entry.setValues(attr, val)
+                """
             log.debug("adding entry: %r" % entry)
             self.add_s(entry)
+        except ldap.ALREADY_EXISTS, e:
+            log.error("Entry already exists: %r" % dn)
+            raise 
         except ldap.LDAPError, e:
-            log.exception("Could not add backend entry: %r" % dn)
+            log.error("Could not add backend entry: %r" % dn)
             raise
 
         self._test_entry(dn, ldap.SCOPE_BASE)
@@ -867,12 +824,15 @@ class DSAdmin(SimpleLDAPObject):
 
         return ""
 
-    def addSuffix(self, suffix, binddn=None, bindpw=None, urls=None, bename=None):
+    def addSuffix(self, suffix, binddn=None, bindpw=None, urls=None, bename=None, beattrs=None):
         """Create and return a suffix and its backend.
 
             Uses: setupBackend and SetupSuffix
             Requires: adding a matching entry in the tree
             TODO: test return values and error codes
+            
+            `beattrs`: see setupBacked
+            
         """
 
         entries_backend = self.getBackendsForSuffix(suffix, ['cn'])
@@ -881,7 +841,7 @@ class DSAdmin(SimpleLDAPObject):
         if not entries_backend:
             assert bename, "Backend name should not be None"
             bename = self.setupBackend(
-                suffix, binddn, bindpw, urls, benamebase=bename)
+                suffix, binddn, bindpw, urls, benamebase=bename, attrvals=beattrs)
         else:  # use existing backend(s)
             benames = [entry.cn for entry in entries_backend]
             bename = benames.pop(0)  # do I need to modify benames
@@ -1119,11 +1079,11 @@ class DSAdmin(SimpleLDAPObject):
         dn = "cn=schema"
         self.modify_s(dn, [(ldap.MOD_ADD, attr, val)])
 
-    def addAttr(self, *args):
-        return self.addSchema('attributeTypes', args)
+    def addAttr(self, *attributes):
+        return self.addSchema('attributeTypes', attributes)
 
-    def addObjClass(self, *args):
-        return self.addSchema('objectClasses', args)
+    def addObjClass(self, *objectclasses):
+        return self.addSchema('objectClasses', objectclasses)
 
     def enableReplLogging(self):
         """Enable logging of replication stuff (1<<13)"""
@@ -1133,11 +1093,11 @@ class DSAdmin(SimpleLDAPObject):
         return self.setLogLevel(0)
 
     #
-    # TODO what if setLogLevel(self, *vals, access='access') or 'error'
+    # TODO what if setLogLevel(self, vals, access='access') or 'error'
     #
     def setLogLevel(self, *vals):
         """Set nsslapd-errorlog-level and return its value."""
-        val = sum(vals)  # TESTME
+        val = sum(vals) 
         self.modify_s(DN_CONFIG, [
             (ldap.MOD_REPLACE, 'nsslapd-errorlog-level', str(val))])
         return val
@@ -1155,7 +1115,7 @@ class DSAdmin(SimpleLDAPObject):
             self.modify_s(confdn, [(ldap.MOD_ADD, 'nsTransmittedControl',
                                    ['2.16.840.1.113730.3.4.12', '1.3.6.1.4.1.1466.29539.12'])])
         except ldap.TYPE_OR_VALUE_EXISTS:
-            print "chaining backend config already has the required controls"
+            log.error("chaining backend config already has the required controls")
 
     def setupChainingMux(self, suffix, isIntermediate, binddn, bindpw, urls):
         self.addSuffix(suffix, binddn, bindpw, urls)
@@ -1172,12 +1132,13 @@ class DSAdmin(SimpleLDAPObject):
                 "; allow (proxy) userdn = \"ldap:///%s\";)" % binddn
             self.modify_s(suffix, [(ldap.MOD_ADD, 'aci', [acival])])
         except ldap.TYPE_OR_VALUE_EXISTS:
-            print "proxy aci already exists in suffix %s for %s" % (
-                suffix, binddn)
+            log.error("proxy aci already exists in suffix %s for %s" % (
+                suffix, binddn))
 
-    # setup chaining from self to to - self is the mux, to is the farm
-    # if isIntermediate is set, this server will chain requests from another server to to
     def setupChaining(self, to, suffix, isIntermediate):
+        """Setup chaining from self to to - self is the mux, to is the farm
+        if isIntermediate is set, this server will chain requests from another server to to
+        """
         bindcn = "chaining user"
         binddn = "cn=%s,cn=config" % bindcn
         bindpw = "chaining"
@@ -1307,12 +1268,13 @@ class DSAdmin(SimpleLDAPObject):
             binddnlist = binddn
 
         entry = Entry(dn_replica)
-        entry.setValues(
-            'objectclass', "top", "nsds5replica", "extensibleobject")
-        entry.setValues('cn', "replica")
-        entry.setValues('nsds5replicaroot', nsuffix)
-        entry.setValues('nsds5replicaid', str(replid))
-        entry.setValues('nsds5replicatype', str(replicatype))
+        entry.update({
+            'objectclass': ("top", "nsds5replica", "extensibleobject"),
+            'cn': "replica",
+            'nsds5replicaroot': nsuffix,
+            'nsds5replicaid': str(replid),
+            'nsds5replicatype': str(replicatype)
+        })
         if repltype != LEAF_TYPE:
             entry.setValues('nsds5flags', "1")
         entry.setValues('nsds5replicabinddn', binddnlist)
@@ -1547,10 +1509,15 @@ class DSAdmin(SimpleLDAPObject):
             ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', ['2358-2359 0'])]
         self.modify_s(agmtdn, mod)
 
-    def restartReplication(self, agmtdn):
-        log.info("Stopping replication %s" % agmtdn)
+    def restartReplication(self, agmtdn, schedule='0000-2359 0123456'):
+        """Schedules a new replication.
+        
+            `schedule` allows to customize the replication instant.
+                        see 389 documentation for further info
+        """
+        log.info("Restarting replication %s" % agmtdn)
         mod = [(ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [
-                '0000-2359 0123456'])]
+                schedule])]
         self.modify_s(agmtdn, mod)
 
     def findAgreementDNs(self, filt='', attrs=None):
@@ -1848,13 +1815,12 @@ class DSAdmin(SimpleLDAPObject):
 
         dn_rsa = 'cn=RSA,cn=encryption,cn=config'
         e_rsa = Entry(dn_rsa)
-        e_rsa.setValues('objectclass', ['top', 'nsEncryptionModule'])
-        e_rsa.setValues('nsSSLPersonalitySSL', secargs.get(
-            'nsSSLPersonalitySSL', 'Server-Cert'))
-        e_rsa.setValues(
-            'nsSSLToken', secargs.get('nsSSLToken', 'internal (software)'))
-        e_rsa.setValues(
-            'nsSSLActivation', secargs.get('nsSSLActivation', 'on'))
+        e_rsa.update({
+            'objectclass': ['top', 'nsEncryptionModule'],
+            'nsSSLPersonalitySSL': secargs.get('nsSSLPersonalitySSL', 'Server-Cert'),
+            'nsSSLToken': secargs.get('nsSSLToken', 'internal (software)'),
+            'nsSSLActivation': secargs.get('nsSSLActivation', 'on')
+        })
         try:
             self.add_s(e_rsa)
         except ldap.ALREADY_EXISTS:
@@ -1897,7 +1863,3 @@ class DSAdmin(SimpleLDAPObject):
             print "RUV entry is", str(ent)
         return RUV(ent)
 
-    ###########################
-    # Static methods start here
-    # TODO move some methods outside. This class is too big
-    ###########################

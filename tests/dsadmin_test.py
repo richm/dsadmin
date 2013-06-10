@@ -85,15 +85,15 @@ def drop_backend(suffix, bename=None, maxnum=50):
 #
 
 
-def addbackend_harn(conn, name):
+def addbackend_harn(conn, name, beattrs=None):
     suffix = "o=%s" % name
     e = Entry((suffix, {
                'objectclass': ['top', 'organization'],
-               'o': name
+               'o': [name]
                }))
 
     try:
-        ret = conn.addSuffix(suffix, bename=name)
+        ret = conn.addSuffix(suffix, bename=name, beattrs=beattrs)
     except ldap.ALREADY_EXISTS:
         raise
     finally:
@@ -185,7 +185,7 @@ def stop_start_test():
     time.sleep(5)
     setup()
     assert conn.search_s(
-        *utils.searchs['NAMINGCONTEXTS']), "Missing namingcontexts"
+        *utils.searches['NAMINGCONTEXTS']), "Missing namingcontexts"
 
 
 def setupSSL_test():

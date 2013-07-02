@@ -2,6 +2,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
+DN_RMANAGER = 'uid=rmanager,cn=config'
 
 auth = {'host': 'localhost',
         'port': 22389,

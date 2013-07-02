@@ -27,7 +27,7 @@ def default_test():
     host = 'localhost'
     port = 10200
     binddn = "cn=directory manager"
-    bindpw = "secret12"
+    bindpw = "password"
     suffix = 'dc=example,dc=com'
     basedn = DN_CONFIG
     scope = ldap.SCOPE_BASE

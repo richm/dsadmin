@@ -47,7 +47,8 @@ def static_var(varname, value):
 #   eg getEntry(*searches['NAMINGCONTEXTS'])
 #
 searches = {
-    'NAMINGCONTEXTS': ('', ldap.SCOPE_BASE, '(objectclass=*)', ['namingcontexts'])
+    'NAMINGCONTEXTS': ('', ldap.SCOPE_BASE, '(objectclass=*)', ['namingcontexts']),
+    'ZOMBIE'         : ('', ldap.SCOPE_SUBTREE, '(&(objectclass=glue)(objectclass=extensibleobject))', ['dn'])
 }
 
 #
@@ -405,7 +406,7 @@ def formatInfData(args):
         ServerIdentifier= dir 
         Suffix= dc=example,dc=com  
         RootDN= cn=Directory Manager 
-        RootDNPwd= secret
+        RootDNPwd= password
         ds_bename=exampleDB 
         AddSampleEntries= No
 

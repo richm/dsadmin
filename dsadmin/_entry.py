@@ -7,6 +7,12 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger(__name__)
 
+class FormatDict(cidict):
+    def __getitem__(self, name):
+        if name in self:
+            return ' '.join(cidict.__getitem__(self, name))
+        return None
+            
 
 class Entry(object):
     """This class represents an LDAP Entry object.
@@ -150,7 +156,7 @@ class Entry(object):
 
     def update(self, dct):
         """Update passthru to the data attribute."""
-        log.debug("update with %r" % dct)
+        log.debug("update dn: %r with %r" % (self.dn, dct))
         for k, v in dct.items():
             if hasattr(v, '__iter__'):
                 self.data[k] = v

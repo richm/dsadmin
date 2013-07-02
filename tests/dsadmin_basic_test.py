@@ -75,7 +75,7 @@ def setupBindDN_CN_test():
 
 
 def setupChangelog_default_test():
-    e = conn.setupChangelog()
+    e = conn.replica.changelog()
     conn.added_entries.append(e.dn)
     assert e.dn, "Bad changelog entry: %r " % e
     assert e.getValue('nsslapd-changelogdir').endswith("changelogdb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
@@ -83,7 +83,7 @@ def setupChangelog_default_test():
 
 
 def setupChangelog_test():
-    e = conn.setupChangelog(dbname="mockChangelogDb")
+    e = conn.replica.changelog(dbname="mockChangelogDb")
     conn.added_entries.append(e.dn)
     assert e.dn, "Bad changelog entry: %r " % e
     assert e.getValue('nsslapd-changelogdir').endswith("mockChangelogDb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
@@ -91,7 +91,7 @@ def setupChangelog_test():
 
 
 def setupChangelog_full_test():
-    e = conn.setupChangelog(dbname="/tmp/mockChangelogDb")
+    e = conn.replica.changelog(dbname="/tmp/mockChangelogDb")
     conn.added_entries.append(e.dn)
 
     assert e.dn, "Bad changelog entry: %r " % e

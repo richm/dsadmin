@@ -34,11 +34,19 @@ def setup_backend():
     global conn
     addbackend_harn(conn, 'addressbook6')
 
-
 def teardown():
     global conn
-    for e in conn.added_entries:
-        conn.delete_s(e)
+    drop_added_entries(conn)
+    
+def drop_added_entries(conn):
+    
+    while conn.added_entries:
+        try:
+            e = conn.added_entries.pop()
+            conn.delete_s(e)
+        except ldap.NOT_ALLOWED_ON_NONLEAF:
+            log.error("Entry is not a leaf: %r" % e)
+            
     log.info("removing %r" % conn.added_backends)
     for suffix in conn.added_backends:
         try:
@@ -86,6 +94,7 @@ def drop_backend(suffix, bename=None, maxnum=50):
 
 
 def addbackend_harn(conn, name, beattrs=None):
+    """Create the suffix o=name and its backend."""
     suffix = "o=%s" % name
     e = Entry((suffix, {
                'objectclass': ['top', 'organization'],
@@ -153,7 +162,7 @@ def prepare_master_replica_test():
     conn.added_entries.append(e.dn)
 
     # only for Writable
-    e = conn.setupChangelog()
+    e = conn.replica.changelog()
     conn.added_entries.append(e.dn)
 
 
@@ -165,10 +174,10 @@ def setupAgreement_test():
         #'bename': "userRoot",
         'binddn': "uid=rmanager,cn=config",
         'bindpw': "password",
-        'type': dsadmin.MASTER_TYPE,
-        'id': '1234'
+        'rtype': dsadmin.MASTER_TYPE,
+        'rid': '1234'
     }
-    conn.setupReplica(args)
+    conn.replica.add(**args)
     conn.added_entries.append(args['binddn'])
 
     dn_replica = conn.setupAgreement(consumer, args)

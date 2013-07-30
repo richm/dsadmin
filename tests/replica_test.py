@@ -313,3 +313,6 @@ def setup_replica_referrals_test():
 
 def setup_all_replica_test():
     raise NotImplementedError()
+
+def replica_keep_in_sync_test():
+    raise NotImplementedError()

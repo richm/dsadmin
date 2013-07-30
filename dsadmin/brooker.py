@@ -9,6 +9,7 @@
 """
 import ldap
 import os
+import re
 import time
 
 
@@ -37,6 +38,7 @@ class Replica(object):
     proxied_methods = 'search_s getEntry'.split()
     STOP = '2358-2359 0'
     START = '0000-2359 0123456'
+    ALWAYS = None
 
     def __init__(self, conn):
         """@param conn - a DSAdmin instance"""
@@ -86,7 +88,9 @@ class Replica(object):
         return ents
 
     def check_init(self, agmtdn):
-        """returns tuple - first element is done/not done, 2nd is no error/has error"""
+        """returns tuple - first element is done/not done, 2nd is no error/has error
+            @param agmtdn - the agreement dn
+        """
         done, hasError = False, 0
         attrlist = ['cn', 'nsds5BeginReplicaRefresh', 'nsds5replicaUpdateInProgress',
                     'nsds5ReplicaLastInitStatus', 'nsds5ReplicaLastInitStart',
@@ -123,7 +127,8 @@ class Replica(object):
         return done, hasError
 
     def start_and_wait(self, agmtdn):
-        rc = self.star_async(agmtdn)
+        """@param agmtdn - agreement dn"""
+        rc = self.start_async(agmtdn)
         if not rc:
             rc = self.wait_init(agmtdn)
             if rc == 2:  # replica busy - retry
@@ -131,6 +136,9 @@ class Replica(object):
         return rc
 
     def wait_init(self, agmtdn):
+        """Initialize replication and wait for completion.
+        @oaram agmtdn - agreement dn
+        """
         done = False
         haserror = 0
         while not done and not haserror:
@@ -139,19 +147,26 @@ class Replica(object):
         return haserror
 
     def start_async(self, agmtdn):
+        """Initialize replication without waiting.
+            @param agmtdn - agreement dn
+        """
         self.log.info("Starting async replication %s" % agmtdn)
         mod = [(ldap.MOD_ADD, 'nsds5BeginReplicaRefresh', 'start')]
-        self.modify_s(agmtdn, mod)
+        self.conn.modify_s(agmtdn, mod)
 
     def stop(self, agmtdn):
+        """Stop replication.
+            @param agmtdn - agreement dn
+        """
         self.log.info("Stopping replication %s" % agmtdn)
         mod = [(
             ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [Replica.STOP])]
-        self.modify_s(agmtdn, mod)
+        self.conn.modify_s(agmtdn, mod)
 
     def restart(self, agmtdn, schedule=START):
         """Schedules a new replication.
-
+            @param agmtdn  -
+            @param schedule - default START
             `schedule` allows to customize the replication instant.
                         see 389 documentation for further info
         """
@@ -160,8 +175,17 @@ class Replica(object):
                 schedule])]
         self.modify_s(agmtdn, mod)
 
+    def keep_in_sync(self, agmtdn):
+        """
+        @param agmtdn - 
+        """
+        self.log.info("Setting agreement for continuous replication")
+        raise NotImplementedError("Check nsds5replicaupdateschedule before writing!")
+
     def status(self, agreement_dn):
-        """Return a formatted string with the replica status."""
+        """Return a formatted string with the replica status.
+            @param agreement_dn - 
+        """
 
         attrlist = ['cn', 'nsds5BeginReplicaRefresh', 'nsds5replicaUpdateInProgress',
                     'nsds5ReplicaLastInitStatus', 'nsds5ReplicaLastInitStart',
@@ -199,6 +223,7 @@ class Replica(object):
             @param suffix - dn of suffix
             @param binddn - the replication bind dn for this replica
                             can also be a list ["cn=r1,cn=config","cn=r2,cn=config"]
+            @param bindpw - used to eventually provision the replication entry
 
             @param rtype - master, hub, leaf (see above for values) - default is master
             @param rid - replica id or - if not given - an internal sequence number will be assigned
@@ -307,8 +332,12 @@ class Replica(object):
 
     def agreements(self, filtr='', attrs=None, dn=True):
         """Return a list of agreement dn.
-            @param dn - return a list of Entry if dn=False
             @param filtr - get only agreements matching the given filter
+                            eg. '(cn=*example.it*)'
+            @param attrs - attributes to retrieve
+                            eg. use ['*'] for all, defaul is ['cn']
+            @param dn - return a list of dsadmin.Entry if dn=False
+
         """
         attrs = attrs or ['cn']
         realfiltr = "(objectclass=nsds5ReplicationAgreement)"
@@ -321,13 +350,16 @@ class Replica(object):
             return [ent.dn for ent in ents]
         return ents
 
-    def agreement_add(self, consumer, suffix=None, binddn=None, bindpw=None, cn_format=r'meTo_$host:$port', description_format=r'me to $host:$port', timeout=120, auto_init=False, bindmethod='simple', starttls=False, args=None):
+    def agreement_add(self, consumer, suffix=None, binddn=None, bindpw=None, cn_format=r'meTo_$host:$port', description_format=r'me to $host:$port', timeout=120, auto_init=False, bindmethod='simple', starttls=False, schedule=ALWAYS, args=None):
         """Create (and return) a replication agreement from self to consumer.
             - self is the supplier,
 
             @param consumer: one of the following (consumer can be a master)
                     * a DSAdmin object if chaining
                     * an object with attributes: host, port, sslport, __str__
+            @param suffix    - eg. 'dc=babel,dc=it'
+            @param binddn    - 
+            @param bindpw    -
             @param cn_format - string.Template to format the agreement name
             @param timeout   - replica timeout in seconds
             @param auto_init - start replication immediately
@@ -385,9 +417,12 @@ class Replica(object):
             'nsds5replicacredentials': bindpw,
             'nsds5replicabindmethod': bindmethod,
             'nsds5replicaroot': nsuffix,
-            'nsds5replicaupdateschedule': '0000-2359 0123456',
             'description': string.Template(description_format).substitute({'host': othhost, 'port': othport})
         })
+        if schedule:
+            if not re.match(r'\d{4}-\d{4} [0-6]{1,7}', start):
+                raise ValueError("Bad schedule format")
+            entry.update({'nsds5replicaupdateschedule': schedule})
         if starttls:
             entry.setValues('nsds5replicatransportinfo', 'TLS')
             entry.setValues('nsds5replicaport', str(othport))
@@ -449,6 +484,7 @@ class Replica(object):
 
         raise NotImplementedError
 
+    
     def agreement_changes(self, agmtdn):
         """Return a list of changes sent by this agreement."""
         retval = 0
@@ -485,6 +521,39 @@ class Backend(object):
         if name in Replica.proxied_methods:
             return DSAdmin.__getattr__(self.conn, name)
 
+    def list(self, name=None, suffix=None, attrs=None):
+        """Get backends by name or suffix
+            @param name -   backend name
+            @param suffix   -   get backend for suffix
+        """
+        attrs = attrs or []
+        
+        # raise errors asap
+        if name and suffix:
+            raise ValueError("Can't specify both name and suffix")
+        
+        def _list_by_suffix(self, suffix, attrs=None):    
+            if suffix:
+                nsuffix = normalizeDN(suffix)
+            else:
+                suffix = nsuffix = '*'
+                
+            entries = self.conn.search_s("cn=plugins,cn=config", ldap.SCOPE_SUBTREE,
+                                    "(&(objectclass=nsBackendInstance)(|(nsslapd-suffix=%s)(nsslapd-suffix=%s)))" % (suffix, nsuffix),
+                                    attrs)
+            return entries
+
+        def _list_by_name(self, name, attrs=None):
+            backend_dn = ','.join(('cn=' + name, DN_LDBM))
+            return self.conn.getEntry(backend_dn, attributes=attrs)
+            
+        if name:
+            return _list_by_name(self, name, attrs)
+        elif suffix:
+            return _list_by_suffix(self, suffix, attrs)
+            
+        raise NotImplementedError()
+        
     def readonly(self, bename=None, readonly='on', suffix=None):
         """Put a database in readonly mode
             @param  bename  -   the backend name (eg. addressbook1)

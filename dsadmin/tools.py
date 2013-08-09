@@ -525,3 +525,22 @@ class DSAdminTools(object):
 
         conn.replicaSetupAll(repArgs)
         return conn
+
+
+class MockDSAdmin(object):
+    host = 'localhost'
+    port = 22389
+    sslport = 0
+
+    def __init__(self, dict_=None):
+        if dict_:
+            self.host = dict_['host']
+            self.port = dict_['port']
+            if 'sslport' in dict_:
+                self.sslport = dict_['sslport']
+        
+    def __str__(self):
+        if self.sslport:
+            return 'ldaps://%s:%s' % (self.host, self.sslport)
+        else:
+            return 'ldap://%s:%s' % (self.host, self.port)

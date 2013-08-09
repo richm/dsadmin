@@ -47,4 +47,4 @@ LOG_DEFAULT,
 LOG_CACHE,
 LOG_PLUGIN,
 LOG_MICROSECONDS,
-LOG_ACL_SUMMARY) = range(8) + range(11,19)
+LOG_ACL_SUMMARY) = [ 1<<x for x in ( range(8) + range(11,19)) ]

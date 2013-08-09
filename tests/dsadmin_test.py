@@ -20,50 +20,60 @@ conn = None
 added_entries = None
 added_backends = None
 
+def harn_nolog():
+    conn.config.loglevel([dsadmin.LOG_DEFAULT])
+    conn.config.loglevel([dsadmin.LOG_DEFAULT], level='access')
+
 
 def setup():
     global conn
     conn = DSAdmin(**config.auth)
     conn.verbose = True
     conn.added_entries = []
-    conn.added_backends = set(['o=mockbe1'])
+    conn.added_backends = set(['o=mockbe2'])
     conn.added_replicas = []
-
-
+    harn_nolog()
+    
 def setup_backend():
     global conn
     addbackend_harn(conn, 'addressbook6')
 
 def teardown():
     global conn
+    conn.rebind()
     drop_added_entries(conn)
     
-def drop_added_entries(conn):
-    
+def drop_added_entries(conn):    
     while conn.added_entries:
         try:
             e = conn.added_entries.pop()
+            log.info("removing entries %r" % conn.added_backends)
             conn.delete_s(e)
         except ldap.NOT_ALLOWED_ON_NONLEAF:
             log.error("Entry is not a leaf: %r" % e)
-            
-    log.info("removing %r" % conn.added_backends)
+        except ldap.NO_SUCH_OBJECT:
+            log.error("Cannot remove entry: %r" % e)
+
+    log.info("removing backends %r" % conn.added_backends)
     for suffix in conn.added_backends:
         try:
-            drop_backend(suffix)
+            drop_backend(conn, suffix)
         except:
             log.exception("error removing %r" % suffix)
     for r in conn.added_replicas:
         try:
-            drop_backend(suffix=None, bename=r)
+            drop_backend(conn, suffix=None, bename=r)
         except:
             log.exception("error removing %r" % r)
 
 
-def drop_backend(suffix, bename=None, maxnum=50):
-    global conn
+def drop_backend(conn, suffix, bename=None, maxnum=50):
     if not bename:
         bename = [x.dn for x in conn.getBackendsForSuffix(suffix)]
+    
+    if not bename:
+        return None
+        
     assert bename, "Missing bename for %r" % suffix
     if not hasattr(bename, '__iter__'):
         bename = [','.join(['cn=%s' % bename, dsadmin.DN_LDBM])]
@@ -110,23 +120,27 @@ def addbackend_harn(conn, name, beattrs=None):
 
     conn.add(e)
     conn.added_entries.append(e.dn)
+    
+    return ret
 
 
 def setupBackend_ok_test():
+    "setupBackend_ok calls brooker.Backend.add"
     try:
-        be = conn.setupBackend('o=mockbe1', benamebase='mockbe1')
+        be = conn.setupBackend('o=mockbe4', benamebase='mockbe4')
         assert be
     except ldap.ALREADY_EXISTS:
         raise
     finally:
-        conn.added_backends.add('o=mockbe1')
+        conn.added_backends.add('o=mockbe4')
 
 
 @raises(ldap.ALREADY_EXISTS)
 def setupBackend_double_test():
-    be1 = conn.setupBackend('o=mockbe2', benamebase='mockbe2')
-    conn.added_backends.add('o=mockbe2')
-    be11 = conn.setupBackend('o=mockbe2', benamebase='mockbe2')
+    "setupBackend_double calls brooker.Backend.add"
+    be1 = conn.setupBackend('o=mockbe3', benamebase='mockbe3')
+    conn.added_backends.add('o=mockbe3')
+    be11 = conn.setupBackend('o=mockbe3', benamebase='mockbe3')
 
 
 def addsuffix_test():
@@ -153,6 +167,7 @@ def addreplica_write_test():
 
 
 def prepare_master_replica_test():
+    """prepare_master_replica -> Replica.changelog"""
     user = {
         'binddn': 'uid=rmanager,cn=config',
         'bindpw': 'password'
@@ -187,6 +202,7 @@ def setupAgreement_test():
 def stop_start_test():
     # dunno why DSAdmin.start|stop writes to dirsrv error-log
     conn.errlog = "/tmp/dsadmin-errlog"
+    open(conn.errlog, "w").close()
     DSAdminTools.stop(conn)
     log.info("server stopped")
     DSAdminTools.start(conn)
@@ -206,7 +222,7 @@ def setupSSL_test():
     cert_dir = conn.getDseAttr('nsslapd-certdir')
     assert cert_dir, "Cannot retrieve cert dir"
 
-    log.info("Initialize the cert store with an empty password")
+    log.info("Initialize the cert store with an empty password: %r", cert_dir)
     fd_null = open('/dev/null', 'w')
     open('%s/pin.txt' % cert_dir, 'w').close()
     cmd_initialize = 'certutil -d %s -N -f %s/pin.txt' % (cert_dir, cert_dir)

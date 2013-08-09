@@ -4,8 +4,11 @@
     IMPORTANT: Ternary operator syntax is unsupported on RHEL5
         x if cond else y #don't!
 
-    The DSAdmin class is split in various mix-ins
+    The DSAdmin functionalities are split in various classes
+        defined in brookers.py
 
+    TODO: reorganize method parameters according to SimpleLDAPObject
+        naming: filterstr, attrlist
 """
 try:
     from subprocess import Popen, PIPE, STDOUT
@@ -145,7 +148,9 @@ def wrapper(f, name):
 class DSAdmin(SimpleLDAPObject):
 
     def getDseAttr(self, attrname):
-        """Return a given attribute from dse.ldif."""
+        """Return a given attribute from dse.ldif.
+            TODO can we take it from "cn=config" ?
+        """
         conffile = self.confdir + '/dse.ldif'
         try:
             dse_ldif = LDIFConn(conffile)
@@ -166,6 +171,8 @@ class DSAdmin(SimpleLDAPObject):
         """
         if self.binddn and len(self.binddn) and not hasattr(self, 'sroot'):
             try:
+                # XXX this fields are stale and not continuously updated
+                # do they have sense?
                 ent = self.getEntry(DN_CONFIG, attrlist=[
                     'nsslapd-instancedir', 
                     'nsslapd-errorlog',
@@ -182,6 +189,7 @@ class DSAdmin(SimpleLDAPObject):
                 instdir = ent.getValue('nsslapd-instancedir')
                 if not instdir and self.isLocal:
                     # get instance name from errorlog
+                    # move re outside
                     self.inst = re.match(
                         r'(.*)[\/]slapd-([^/]+)/errors', self.errlog).group(2)
                     if self.isLocal and self.confdir:
@@ -235,6 +243,7 @@ class DSAdmin(SimpleLDAPObject):
                     try:
                         self.simple_bind_s(self.binddn, self.bindpw)
                     except ldap.SERVER_DOWN, e:
+                        # TODO add server info in exception
                         log.error("Cannot connect to %r" % uri)
                         raise e
                     break
@@ -242,9 +251,23 @@ class DSAdmin(SimpleLDAPObject):
                     needtls = True
             self.__initPart2()
 
+    def rebind(self):
+        """Reconnect to the DS
+        
+            @raise ldap.CONFIDENTIALITY_REQUIRED - missing TLS: 
+        """
+        SimpleLDAPObject.__init__(self, self.toLDAPURL())
+        #self.start_tls_s()
+        self.simple_bind_s(self.binddn, self.bindpw)
+
     def __add_brookers__(self):
-        from dsadmin.brooker import Replica
+        from dsadmin.brooker import (
+            Replica,
+            Backend,
+            Config)
         self.replica = Replica(self)
+        self.backend = Backend(self)
+        self.config = Config(self)
     
     def __init__(self, host='localhost', port=389, binddn='', bindpw='', nobind=False, sslport=0, verbose=False):  # default to anon bind
         """We just set our instance variables and wrap the methods.
@@ -296,9 +319,9 @@ class DSAdmin(SimpleLDAPObject):
         """Wrapper around SimpleLDAPObject.search. It is common to just get one entry.
             @param  - entry dn
             @param  - search scope, in ldap.SCOPE_BASE (default), ldap.SCOPE_SUB, ldap.SCOPE_ONE
-            @param  - filter, default '(objectClass=*)' from SimpleLDAPObject
-            @param  - list of attributes to retrieve. eg ['cn', 'uid']
-
+            @param filterstr - filterstr, default '(objectClass=*)' from SimpleLDAPObject
+            @param attrlist - list of attributes to retrieve. eg ['cn', 'uid']
+            @oaram attrsonly - default None from SimpleLDAPObject
             eg. getEntry(dn, scope, filter, attributes)
 
             XXX This cannot return None
@@ -518,6 +541,7 @@ class DSAdmin(SimpleLDAPObject):
         adder = LDIFAdder(input_file, self, cont)
 
     def getSuffixes(self):
+        """@return a list of cn suffixes"""
         ents = self.search_s(DN_MAPPING_TREE, ldap.SCOPE_ONELEVEL)
         sufs = []
         for ent in ents:
@@ -539,111 +563,26 @@ class DSAdmin(SimpleLDAPObject):
 
     def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase='localdb', verbose=False):
         """Setup a backend and return its dn. Blank on error
-            @param suffix
-            @param attrvals: a dict with further params like
-                            {
-                                'nsslapd-cachememsize': '1073741824',
-                                'nsslapd-cachesize': '-1',
-                            }
+        
+            NOTE This won't create a suffix nor its related entry in 
+                the tree!!!
+                
+            XXX Deprecated! @see dsadmin.brooker.Backend.add
+            
         """
-        attrvals = attrvals or {}
-        dnbase = ""
-
-        # figure out what type of be based on args
-        if binddn and bindpw and urls:  # its a chaining be
-            dnbase = DN_CHAIN
-        else:  # its a ldbm be
-            dnbase = DN_LDBM
-
-        nsuffix = normalizeDN(suffix)
-        try:
-            cn = benamebase
-            log.debug("create backend with cn: %s" % cn)
-            dn = "cn=" + cn + "," + dnbase
-            entry = Entry(dn)
-            entry.update({
-                'objectclass': ['top', 'extensibleObject', 'nsBackendInstance'],
-                'cn': cn,
-                'nsslapd-suffix': nsuffix
-            })
-
-            if binddn and bindpw and urls:  # its a chaining be
-                entry.update({
-                             'nsfarmserverurl': urls,
-                             'nsmultiplexorbinddn': binddn,
-                             'nsmultiplexorcredentials': bindpw
-                             })
-
-            # set attrvals (but not cn, because it's in dn)
-            # TODO do it in Entry
-            if attrvals:
-                entry.update(attrvals)
-                """
-                for attr, val in attrvals.items():
-                    log.debug("adding %s = %s to entry %s" % (
-                              attr, val, dn))
-                    entry.setValues(attr, val)
-                """
-            log.debug("adding entry: %r" % entry)
-            self.add_s(entry)
-        except ldap.ALREADY_EXISTS, e:
-            log.error("Entry already exists: %r" % dn)
-            raise 
-        except ldap.LDAPError, e:
-            log.error("Could not add backend entry: %r" % dn)
-            raise
-
-        self._test_entry(dn, ldap.SCOPE_BASE)
-        return cn
+        return self.backend.add(suffix=suffix, binddn=binddn, bindpw=bindpw,
+            urls=urls, attrvals=attrvals, benamebase=benamebase, 
+            setupmt=False, parent=None)
+            
 
     def setupSuffix(self, suffix, bename, parent="", verbose=False):
         """Setup a suffix with the given backend-name.
 
-            This method does not create the matching entry in the tree.
-            Ex. setupSuffix(suffix='o=addressbook1', bename='addressbook1')
-                creates:
-                    - the addressbook1 backend-name and file
-                    - the mapping in "cn=mapping tree,cn=config"
-                you have to create:
-                    - the ldap entry "o=addressbook1"
+            XXX Deprecated! @see dsadmin.brooker.Backend.setup_mt
+
         """
-        nsuffix = normalizeDN(suffix)
-        #escapedn = escapeDNValue(nsuffix)
-        nparent = ""
-        if parent:
-            nparent = normalizeDN(parent)
-        filt = suffixfilt(suffix)
-        # if suffix exists, return
-        try:
-            entry = self.getEntry(
-                DN_MAPPING_TREE, ldap.SCOPE_SUBTREE, filt)
-            return entry
-        except NoSuchEntryError:
-            entry = None
-
-        # fix me when we can actually used escaped DNs
-        #dn = "cn=%s,cn=mapping tree,cn=config" % escapedn
-        dn = ','.join(('cn="%s"' % nsuffix, DN_MAPPING_TREE))
-        entry = Entry(dn)
-        entry.update({
-            'objectclass': ['top', 'extensibleObject', 'nsMappingTree'],
-            'nsslapd-state': 'backend',
-            # the value in the dn has to be DN escaped
-            # internal code will add the quoted value - unquoted value is useful for searching
-            'cn': nsuffix,
-            'nsslapd-backend': bename
-        })
-        #entry.setValues('cn', [escapedn, nsuffix]) # the value in the dn has to be DN escaped
-        # the other value can be the unescaped value
-        if parent:
-            entry.setValues('nsslapd-parent-suffix', nparent)
-        try:
-            self.add_s(entry)
-        except ldap.LDAPError, e:
-            raise LDAPError("Error adding suffix entry " + dn, e)
-
-        ret = self._test_entry(dn, ldap.SCOPE_BASE)
-        return ret
+        return self.backend.setup_mt(suffix, bename, parent)
+        
 
     def getBackendsForSuffix(self, suffix, attrs=None):
         # TESTME removed try..except and raise if NoSuchEntryError
@@ -685,6 +624,12 @@ class DSAdmin(SimpleLDAPObject):
     def addSuffix(self, suffix, binddn=None, bindpw=None, urls=None, bename=None, beattrs=None):
         """Create and return a suffix and its backend.
 
+            @param  suffix
+            @param  urls
+            @param  bename  - name of the backed (eventually created)
+            @param  beattrs - parametes to create the backend
+            @param  binddn
+            @param  bindpw
             Uses: setupBackend and SetupSuffix
             Requires: adding a matching entry in the tree
             TODO: test return values and error codes
@@ -692,12 +637,11 @@ class DSAdmin(SimpleLDAPObject):
             `beattrs`: see setupBacked
             
         """
-
-        entries_backend = self.getBackendsForSuffix(suffix, ['cn'])
         benames = []
+        entries_backend = self.getBackendsForSuffix(suffix, ['cn'])
         # no backends for this suffix yet - create one
         if not entries_backend:
-            assert bename, "Backend name should not be None"
+            # if not bename, self.setupBackend raises
             bename = self.setupBackend(
                 suffix, binddn, bindpw, urls, benamebase=bename, attrvals=beattrs)
         else:  # use existing backend(s)
@@ -943,39 +887,7 @@ class DSAdmin(SimpleLDAPObject):
     def addObjClass(self, *objectclasses):
         return self.addSchema('objectClasses', objectclasses)
 
-    def loglevel(self, vals=None, replica=False, level='error'):
-        """Set the access or error log level.
-        @param vals - a list of log level codes
-        @param replica  -   True to enable replica logging
-        @param level    -   'access' or 'error'
-        
-        ex. loglevel([dsadmin.LOG_DEFAULT])
-        """
-        level = 'nsslapd-%slog-level' % level
-        vals = vals or [0]
-        val = sum(vals)
-        # eventually enable replica
-        val |= (replica << LOG_REPLICA)
-        self.modify_s(DN_CONFIG, [
-            (ldap.MOD_REPLACE, level, str(val))])
-        return val
 
-    # replaced by loglevel
-    def enableReplLogging(self):
-        """Enable logging of replication stuff (1<<13)"""
-        val = 1 << LOG_REPLICA
-        return self.loglevel([val])
-
-    def disableReplLogging(self):
-        return self.loglevel()
-
-    def setLogLevel(self, *vals):
-        """Set nsslapd-errorlog-level and return its value."""
-        return self.loglevel(vals)
-
-    def setAccessLogLevel(self, *vals):
-        """Set nsslapd-accesslog-level and return its value."""
-        return self.loglevel(vals, level='access')
 
 
 
@@ -1052,10 +964,6 @@ class DSAdmin(SimpleLDAPObject):
         # enable the chain on update
         return self.enableChainOnUpdate(suffix, chainbe)
 
-    def setupReplica(self, args):
-        """Deprecated, use replica.add
-        """
-        return self.replica.add(**args)
 
     def setupBindDN(self, binddn, bindpw, attrs=None):
         """ Return - eventually creating - a person entry with the given dn and pwd.
@@ -1270,6 +1178,11 @@ class DSAdmin(SimpleLDAPObject):
 
 
     # moved to Replica
+    def setupReplica(self, args):
+        """Deprecated, use replica.add
+        """
+        return self.replica.add(**args)
+
     def startReplication_async(self, agmtdn):
         return self.replica.start_async(agmtdn)
 
@@ -1421,52 +1334,33 @@ class DSAdmin(SimpleLDAPObject):
                 mods.append((ldap.MOD_REPLACE, attr, str(val)))
         self.modify_s(dn, mods)
 
+    
+    # Moved to config
+    # replaced by loglevel
+    def enableReplLogging(self):
+        """Enable logging of replication stuff (1<<13)"""
+        val = LOG_REPLICA
+        return self.config.loglevel([val])
+
+    def disableReplLogging(self):
+        return self.config.loglevel()
+
+    def setLogLevel(self, *vals):
+        """Set nsslapd-errorlog-level and return its value."""
+        return self.config.loglevel(vals)
+
+    def setAccessLogLevel(self, *vals):
+        """Set nsslapd-accesslog-level and return its value."""
+        return self.config.loglevel(vals, level='access')
+
     def configSSL(self, secport=636, secargs=None):
         """Configure SSL support into cn=encryption,cn=config.
 
             secargs is a dict like {
                 'nsSSLPersonalitySSL': 'Server-Cert'
             }
+            
+            XXX moved to brooker.Config
         """
-        log.debug("configuring SSL with secargs:%r" % secargs)
-        secargs = secargs or {}
-
-        dn_enc = 'cn=encryption,cn=config'
-        ciphers = '-rsa_null_md5,+rsa_rc4_128_md5,+rsa_rc4_40_md5,+rsa_rc2_40_md5,+rsa_des_sha,' + \
-            '+rsa_fips_des_sha,+rsa_3des_sha,+rsa_fips_3des_sha,' + \
-            '+tls_rsa_export1024_with_rc4_56_sha,+tls_rsa_export1024_with_des_cbc_sha'
-        mod = [(ldap.MOD_REPLACE, 'nsSSL3', secargs.get('nsSSL3', 'on')),
-               (ldap.MOD_REPLACE, 'nsSSLClientAuth',
-                secargs.get('nsSSLClientAuth', 'allowed')),
-               (ldap.MOD_REPLACE, 'nsSSL3Ciphers', secargs.get('nsSSL3Ciphers', ciphers))]
-        self.modify_s(dn_enc, mod)
-
-        dn_rsa = 'cn=RSA,cn=encryption,cn=config'
-        e_rsa = Entry(dn_rsa)
-        e_rsa.update({
-            'objectclass': ['top', 'nsEncryptionModule'],
-            'nsSSLPersonalitySSL': secargs.get('nsSSLPersonalitySSL', 'Server-Cert'),
-            'nsSSLToken': secargs.get('nsSSLToken', 'internal (software)'),
-            'nsSSLActivation': secargs.get('nsSSLActivation', 'on')
-        })
-        try:
-            self.add_s(e_rsa)
-        except ldap.ALREADY_EXISTS:
-            pass
-
-        dn_config = DN_CONFIG
-        mod = [
-            (ldap.MOD_REPLACE,
-                'nsslapd-security', secargs.get('nsslapd-security', 'on')),
-            (ldap.MOD_REPLACE,
-                'nsslapd-ssl-check-hostname', secargs.get('nsslapd-ssl-check-hostname', 'off')),
-            (ldap.MOD_REPLACE,
-                'nsslapd-secureport', str(secport))
-        ]
-        log.debug("trying to modify %r with %r" % (dn_config, mod))
-        self.modify_s(dn_config, mod)
-
-        fields = 'nsslapd-security nsslapd-ssl-check-hostname'.split()
-        return self.getEntry(dn_config, attrlist=fields)
-
-
+        return self.config.enable_ssl(secport, secargs)
+        

@@ -33,8 +33,8 @@ def tearDown():
     global conn
 
     # reduce log level
-    conn.setLogLevel(0)
-    conn.setAccessLogLevel(0)
+    conn.config.loglevel(0)
+    conn.config.loglevel(0, level='access')
 
     for e in conn.added_entries:
         try:
@@ -109,12 +109,3 @@ def getMTEntry_present_test():
     e = conn.getMTEntry(suffix)
     assert e, "Entry should be present %s" % suffix
 
-
-def setLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 2
-    assert conn.setLogLevel(*vals) == sum(vals)
-
-
-def setAccessLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 2
-    assert conn.setAccessLogLevel(*vals) == sum(vals)

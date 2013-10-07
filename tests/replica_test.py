@@ -119,7 +119,7 @@ def teardown():
     global conn
     drop_added_entries(conn)
     conn.delete_s(','.join(['cn="o=testreplica"', DN_MAPPING_TREE]))
-    drop_backend('o=testreplica')
+    drop_backend(conn, 'o=testreplica')
     conn.delete_s('o=testreplica')
 
 
@@ -217,7 +217,7 @@ def setup_agreement_default_test():
         'binddn': DN_RMANAGER,
         'bindpw': "password"
     }
-    params = {'consumer': MockDSAdmin(), 'suffix': "o=testReplicaCreation"}
+    params = {'consumer': MockDSAdmin(), 'suffix': "o=testReplica"}
     params.update(user)
 
     agreement_dn = conn.replica.agreement_add(**params)
@@ -244,7 +244,7 @@ def setup_agreement_test():
         'binddn': DN_RMANAGER,
         'bindpw': "password"
     }
-    params = {'consumer': MockDSAdmin(), 'suffix': "o=testReplicaCreation"}
+    params = {'consumer': MockDSAdmin(), 'suffix': "o=testReplica"}
     params.update(user)
 
     conn.replica.agreement_add(**params)
@@ -258,7 +258,7 @@ def setup_agreement_fractional_test():
         'binddn': DN_RMANAGER,
         'bindpw': "password"
     }
-    params = {'consumer': MockDSAdmin(), 'suffix': "o=testReplicaCreation"}
+    params = {'consumer': MockDSAdmin(), 'suffix': "o=testReplica"}
     params.update(user)
 
     #conn.replica.agreement_add(**params)

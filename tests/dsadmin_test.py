@@ -127,12 +127,12 @@ def addbackend_harn(conn, name, beattrs=None):
 def setupBackend_ok_test():
     "setupBackend_ok calls brooker.Backend.add"
     try:
-        be = conn.setupBackend('o=mockbe4', benamebase='mockbe4')
+        be = conn.setupBackend('o=mockbe5', benamebase='mockbe5')
         assert be
     except ldap.ALREADY_EXISTS:
         raise
     finally:
-        conn.added_backends.add('o=mockbe4')
+        conn.added_backends.add('o=mockbe5')
 
 
 @raises(ldap.ALREADY_EXISTS)
@@ -208,7 +208,10 @@ def stop_start_test():
     DSAdminTools.start(conn)
     log.info("server start")
     time.sleep(5)
+    # save and restore conn settings after restart
+    tmp = conn.added_backends, conn.added_entries
     setup()
+    conn.added_backends, conn.added_entries = tmp
     assert conn.search_s(
         *utils.searches['NAMINGCONTEXTS']), "Missing namingcontexts"
 

@@ -28,7 +28,7 @@ DN_CHANGELOG = "cn=changelog5,cn=config"
 DEFAULT_USER = "nobody"
 
 #
-# LOG: see https://access.redhat.com/site/documentation/en-US/Red_Hat_Directory_Server/8.2/html/Configuration_and_Command-Line_Tool_Reference/error-logs.html
+# LOG: see https://access.redhat.com/site/documentation/en-US/Red_Hat_Directory_Server/9.0/html/Administration_Guide/Configuring_Logs.html
 # The default log level is 16384
 #
 ( 

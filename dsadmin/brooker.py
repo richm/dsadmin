@@ -772,20 +772,20 @@ class Backend(object):
     def setup_mt(self, suffix, bename, parent=None):
         """Setup a suffix with the given backend-name.
 
-            @param  suffix
+            @param suffix
             @param bename
             @param parent   - the parent suffix 
             @param verbose  - None 
-            
+
             This method does not create the matching entry in the tree,
-            nor the given backend. Both should exist
+            nor the given backend. Both should be created apart.
             
-            Ex. setupSuffix(suffix='o=addressbook1', bename='addressbook1')
+            Ex. setup_mt(suffix='o=addressbook1', bename='addressbook1')
                 creates:
                     - the mapping in "cn=mapping tree,cn=config"
                 you have to create:
-                    - the backend
-                    - the ldap entry "o=addressbook1"
+                    - the backend 
+                    - the ldap entry "o=addressbook1" *after*
         """
         nsuffix = normalizeDN(suffix)
         #escapedn = escapeDNValue(nsuffix)

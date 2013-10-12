@@ -532,6 +532,7 @@ class Config(object):
             
             eg. set('passwordExp', 'on')
         """
+        self.log.debug("set(%r, %r)" % (key, value))
         return self.conn.modify(DN_CONFIG,
             [(ldap.MOD_REPLACE, key, value)])
             
@@ -539,28 +540,30 @@ class Config(object):
         """Get an attribute under cn=config"""
         return self.conn.getEntry(DN_CONFIG).__getattr__(key)
 
-    def loglevel(self, vals=None, replica=False, level='error'):
+    def loglevel(self, vals=(LOG_DEFAULT,), level='error', update=False):
         """Set the access or error log level.
-        @param vals - a list of log level codes (eg. dsadmin.LOG_*)
-        @param replica  -   True to enable replica logging
-        @param level    -   'access' or 'error'
+        @param vals - a list of log level codes (eg. dsadmin.LOG_*) 
+                      defaults to LOG_DEFAULT
+        @param level   -   'access' or 'error'
+        @param update  - False for replace (default), True for update
         
         ex. loglevel([dsadmin.LOG_DEFAULT, dsadmin.LOG_ENTRY_PARSER])
-        TODO replace the replica param with the ability to update
-             logging stuff without dropping the existing
         """
         level = 'nsslapd-%slog-level' % level
-        vals = vals or [0]
-        val = sum(vals)
-        
-        # eventually enable replica logging #TODO remove it
-        if replica:
-            val |=  LOG_REPLICA
-            
-        self.conn.modify_s(DN_CONFIG, [
-            (ldap.MOD_REPLACE, level, str(val))
-            ])
-        return val
+        assert len(vals) > 0, "set at least one log level"
+        tot = 0
+        for v in vals:
+            tot |= v
+
+        if update:
+            old = int(self.get(level))
+            tot |= old
+            self.log.debug("Update %s value: %r -> %r" % (level, old, tot))
+        else:
+            self.log.debug("Replace %s with value: %r" % (level, tot))
+
+        self.set(level, str(tot))
+        return tot
 
     def enable_ssl(self, secport=636, secargs=None):
         """Configure SSL support into cn=encryption,cn=config.

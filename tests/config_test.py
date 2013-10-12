@@ -48,8 +48,8 @@ def setup():
 
 def teardown():
     global conn
-    conn.config.loglevel([dsadmin.LOG_DEFAULT])
-    conn.config.loglevel([dsadmin.LOG_DEFAULT], level='access')
+    conn.config.loglevel([dsadmin.LOG_CACHE])
+    conn.config.loglevel([dsadmin.LOG_CACHE], level='access')
     
     """
     drop_added_entries(conn)
@@ -59,11 +59,23 @@ def teardown():
     """
     
 def loglevel_test():
-    vals = [dsadmin.LOG_DEFAULT, dsadmin.LOG_REPLICA, dsadmin.LOG_CONNECT]
-    assert conn.config.loglevel(vals) == sum(vals)
+    vals = [dsadmin.LOG_CACHE, dsadmin.LOG_REPLICA, dsadmin.LOG_CONNECT]
+    expected = sum(vals)
+    assert conn.config.loglevel(vals) == expected
+    ret = conn.config.get('nsslapd-errorlog-level') 
+    assert ret == str(expected), "expected: %r got: %r" % (expected, ret)
+    
+
+def loglevel_update_test():
+    vals = [dsadmin.LOG_CACHE, dsadmin.LOG_CONNECT]
+    e = sum(vals)
+    assert conn.config.loglevel(vals) == e
+    vals = [dsadmin.LOG_REPLICA]
+    ret = conn.config.loglevel(vals, update=True) 
+    assert ret == (e + sum(vals)), "expected %s got %s" % (e + sum(vals), ret)
 
 
 def access_loglevel_test():
-    vals = [dsadmin.LOG_DEFAULT, dsadmin.LOG_REPLICA, dsadmin.LOG_CONNECT]
+    vals = [dsadmin.LOG_CACHE, dsadmin.LOG_REPLICA, dsadmin.LOG_CONNECT]
     assert conn.config.loglevel(vals, level='access') == sum(vals)
 

@@ -4,8 +4,11 @@
     IMPORTANT: Ternary operator syntax is unsupported on RHEL5
         x if cond else y #don't!
 
-    The DSAdmin class is split in various mix-ins
+    The DSAdmin functionalities are split in various classes
+        defined in brookers.py
 
+    TODO: reorganize method parameters according to SimpleLDAPObject
+        naming: filterstr, attrlist
 """
 try:
     from subprocess import Popen, PIPE, STDOUT
@@ -40,6 +43,7 @@ from ldap import LDAPError
 
 from dsadmin._constants import *
 from dsadmin._entry import Entry
+from dsadmin._replication import CSN, RUV
 from dsadmin._ldifconn import LDIFConn
 from dsadmin.utils import (
     isLocalHost, 
@@ -52,8 +56,8 @@ from dsadmin.utils import (
 # mixin
 #from dsadmin.tools import DSAdminTools
 
-DBMONATTRRE = re.compile(r'^([a-zA-Z]+)-([1-9][0-9]*)$')
-DBMONATTRRESUN = re.compile(r'^([a-zA-Z]+)-([a-zA-Z]+)$')
+RE_DBMONATTR = re.compile(r'^([a-zA-Z]+)-([1-9][0-9]*)$')
+RE_DBMONATTRSUN = re.compile(r'^([a-zA-Z]+)-([a-zA-Z]+)$')
 
 
 
@@ -68,8 +72,10 @@ class Error(Exception):
 class InvalidArgumentError(Error):
     pass
 
+class AlreadyExists(ldap.ALREADY_EXISTS):
+    pass
 
-class NoSuchEntryError(Error):
+class NoSuchEntryError(ldap.NO_SUCH_OBJECT):
     pass
 
 
@@ -83,180 +89,17 @@ class  DsError(Error):
     pass
 
 
-class CSN(object):
-    """CSN is Change Sequence Number
-        csn.ts is the timestamp (time_t - seconds)
-        csn.seq is the sequence number (max 65535)
-        csn.rid is the replica ID of the originating master
-        csn.subseq is not currently used"""
-    csnpat = r'(.{8})(.{4})(.{4})(.{4})'
-    csnre = re.compile(csnpat)
-
-    def __init__(self, csnstr):
-        match = CSN.csnre.match(csnstr)
-        self.ts = 0
-        self.seq = 0
-        self.rid = 0
-        self.subseq = 0
-        if match:
-            self.ts = int(match.group(1), 16)
-            self.seq = int(match.group(2), 16)
-            self.rid = int(match.group(3), 16)
-            self.subseq = int(match.group(4), 16)
-        elif csnstr:
-            self.ts = 0
-            self.seq = 0
-            self.rid = 0
-            self.subseq = 0
-            log.info("%r is not a valid CSN" % csnstr)
-
-    def csndiff(self, oth):
-        return (oth.ts - self.ts, oth.seq - self.seq, oth.rid - self.rid, oth.subseq - self.subseq)
-
-    def __cmp__(self, oth):
-        if self is oth:
-            return 0
-        (tsdiff, seqdiff, riddiff, subseqdiff) = self.csndiff(oth)
-
-        diff = tsdiff or seqdiff or riddiff or subseqdiff
-        ret = 0
-        if diff > 0:
-            ret = 1
-        elif diff < 0:
-            ret = -1
-        return ret
-
-    def __eq__(self, oth):
-        return cmp(self, oth) == 0
-
-    def diff2str(self, oth):
-        retstr = ''
-        diff = oth.ts - self.ts
-        if diff > 0:
-            td = datetime.timedelta(seconds=diff)
-            retstr = "is behind by %s" % td
-        elif diff < 0:
-            td = datetime.timedelta(seconds=-diff)
-            retstr = "is ahead by %s" % td
-        else:
-            diff = oth.seq - self.seq
-            if diff:
-                retstr = "seq differs by %d" % diff
-            elif self.rid != oth.rid:
-                retstr = "rid %d not equal to rid %d" % (self.rid, oth.rid)
-            else:
-                retstr = "equal"
-        return retstr
-
-    def __repr__(self):
-        return time.strftime("%x %X", time.localtime(self.ts)) + " seq: " + str(self.seq) + " rid: " + str(self.rid)
-
-    def __str__(self):
-        return self.__repr__()
-
-
-class RUV(object):
-    """RUV is Replica Update Vector
-        ruv.gen is the generation CSN
-        ruv.rid[1] through ruv.rid[N] are dicts - the number (1-N) is the replica ID
-          ruv.rid[N][url] is the purl
-          ruv.rid[N][min] is the min csn
-          ruv.rid[N][max] is the max csn
-          ruv.rid[N][lastmod] is the last modified timestamp
-        example ruv attr:
-        nsds50ruv: {replicageneration} 3b0ebc7f000000010000
-        nsds50ruv: {replica 1 ldap://myhost:51010} 3b0ebc9f000000010000 3b0ebef7000000010000
-        nsruvReplicaLastModified: {replica 1 ldap://myhost:51010} 292398402093
-        if the tryrepl flag is true, if getting the ruv from the suffix fails, try getting
-        the ruv from the cn=replica entry
-    """
-    genpat = r'\{replicageneration\}\s+(\w+)'
-    genre = re.compile(genpat)
-    ruvpat = r'\{replica\s+(\d+)\s+(.+?)\}\s*(\w*)\s*(\w*)'
-    ruvre = re.compile(ruvpat)
-
-    def __init__(self, ent):
-        # rid is a dict
-        # key is replica ID - val is dict of url, min csn, max csn
-        self.rid = {}
-        for item in ent.getValues('nsds50ruv'):
-            matchgen = RUV.genre.match(item)
-            matchruv = RUV.ruvre.match(item)
-            if matchgen:
-                self.gen = CSN(matchgen.group(1))
-            elif matchruv:
-                rid = int(matchruv.group(1))
-                self.rid[rid] = {'url': matchruv.group(2),
-                                 'min': CSN(matchruv.group(3)),
-                                 'max': CSN(matchruv.group(4))}
-            else:
-                log.info("unknown RUV element %r" % item)
-        for item in ent.getValues('nsruvReplicaLastModified'):
-            matchruv = RUV.ruvre.match(item)
-            if matchruv:
-                rid = int(matchruv.group(1))
-                self.rid[rid]['lastmod'] = int(matchruv.group(3), 16)
-            else:
-                log.info("unknown nsruvReplicaLastModified item %r" % item)
-
-    def __cmp__(self, oth):
-        if self is oth:
-            return 0
-        if not self:
-            return -1  # None is less than something
-        if not oth:
-            return 1  # something is greater than None
-        diff = cmp(self.gen, oth.gen)
-        if diff:
-            return diff
-        for rid in self.rid.keys():
-            for item in ('max', 'min'):
-                csn = self.rid[rid][item]
-                csnoth = oth.rid[rid][item]
-                diff = cmp(csn, csnoth)
-                if diff:
-                    return diff
-        return 0
-
-    def __eq__(self, oth):
-        return cmp(self, oth) == 0
-
-    def getdiffs(self, oth):
-        """Compare two ruvs and return the differences
-        returns a tuple - the first element is the
-        result of cmp() - the second element is a string"""
-        if self is oth:
-            return (0, "\tRUVs are the same")
-        if not self:
-            return (-1, "\tfirst RUV is empty")
-        if not oth:
-            return (1, "\tsecond RUV is empty")
-        diff = cmp(self.gen, oth.gen)
-        if diff:
-            return (diff, "\tgeneration [" + str(self.gen) + "] not equal to [" + str(oth.gen) + "]: likely not yet initialized")
-        retstr = ''
-        for rid in self.rid.keys():
-            for item in ('max', 'min'):
-                csn = self.rid[rid][item]
-                csnoth = oth.rid[rid][item]
-                csndiff = cmp(csn, csnoth)
-                if csndiff:
-                    if len(retstr):
-                        retstr += "\n"
-                    retstr += "\trid %d %scsn %s\n\t[%s] vs [%s]" % (rid, item, csn.diff2str(csnoth),
-                                                                     csn, csnoth)
-                    if not diff:
-                        diff = csndiff
-        if not diff:
-            retstr = "\tup-to-date - RUVs are equal"
-        return (diff, retstr)
 
 
 def wrapper(f, name):
-    """This is the method that wraps all of the methods of the superclass.  This seems
-    to need to be an unbound method, that's why it's outside of DSAdmin.  Perhaps there
+    """Wrapper of all superclass methods using dsadmin.Entry.
+        @param f - DSAdmin method inherited from SimpleLDAPObject
+        @param name - method to call
+        
+    This seems to need to be an unbound method, that's why it's outside of DSAdmin.  Perhaps there
     is some way to do this with the new classmethod or staticmethod of 2.4.
-    Basically, we replace every call to a method in SimpleLDAPObject (the superclass
+    
+    We replace every call to a method in SimpleLDAPObject (the superclass
     of DSAdmin) with a call to inner.  The f argument to wrapper is the bound method
     of DSAdmin (which is inherited from the superclass).  Bound means that it will implicitly
     be called with the self argument, it is not in the args list.  name is the name of
@@ -305,7 +148,9 @@ def wrapper(f, name):
 class DSAdmin(SimpleLDAPObject):
 
     def getDseAttr(self, attrname):
-        """Return a given attribute from dse.ldif."""
+        """Return a given attribute from dse.ldif.
+            TODO can we take it from "cn=config" ?
+        """
         conffile = self.confdir + '/dse.ldif'
         try:
             dse_ldif = LDIFConn(conffile)
@@ -326,12 +171,16 @@ class DSAdmin(SimpleLDAPObject):
         """
         if self.binddn and len(self.binddn) and not hasattr(self, 'sroot'):
             try:
-                ent = self.getEntry(
-                    DN_CONFIG, ldap.SCOPE_BASE, '(objectclass=*)',
-                    ['nsslapd-instancedir', 'nsslapd-errorlog',
-                     'nsslapd-certdir', 'nsslapd-schemadir'])
+                # XXX this fields are stale and not continuously updated
+                # do they have sense?
+                ent = self.getEntry(DN_CONFIG, attrlist=[
+                    'nsslapd-instancedir', 
+                    'nsslapd-errorlog',
+                    'nsslapd-certdir', 
+                    'nsslapd-schemadir'])
                 self.errlog = ent.getValue('nsslapd-errorlog')
                 self.confdir = ent.getValue('nsslapd-certdir')
+                
                 if self.isLocal:
                     if not self.confdir or not os.access(self.confdir + '/dse.ldif', os.R_OK):
                         self.confdir = ent.getValue('nsslapd-schemadir')
@@ -340,6 +189,7 @@ class DSAdmin(SimpleLDAPObject):
                 instdir = ent.getValue('nsslapd-instancedir')
                 if not instdir and self.isLocal:
                     # get instance name from errorlog
+                    # move re outside
                     self.inst = re.match(
                         r'(.*)[\/]slapd-([^/]+)/errors', self.errlog).group(2)
                     if self.isLocal and self.confdir:
@@ -357,10 +207,8 @@ class DSAdmin(SimpleLDAPObject):
                     self.sroot, self.inst = match.groups()
                 else:
                     self.sroot = self.inst = ''
-                ent = self.getEntry(
-                    'cn=config,' + DN_LDBM,
-                    ldap.SCOPE_BASE, '(objectclass=*)',
-                    ['nsslapd-directory'])
+                ent = self.getEntry('cn=config,' + DN_LDBM,
+                    attrlist=['nsslapd-directory'])
                 self.dbdir = os.path.dirname(ent.getValue('nsslapd-directory'))
             except (ldap.INSUFFICIENT_ACCESS, ldap.CONNECT_ERROR, NoSuchEntryError):
                 log.exception("Skipping exception during initialization")
@@ -392,13 +240,36 @@ class DSAdmin(SimpleLDAPObject):
                 try:
                     if needtls:
                         self.start_tls_s()
-                    self.simple_bind_s(self.binddn, self.bindpw)
+                    try:
+                        self.simple_bind_s(self.binddn, self.bindpw)
+                    except ldap.SERVER_DOWN, e:
+                        # TODO add server info in exception
+                        log.error("Cannot connect to %r" % uri)
+                        raise e
                     break
                 except ldap.CONFIDENTIALITY_REQUIRED:
                     needtls = True
             self.__initPart2()
 
-    def __init__(self, host, port=389, binddn='', bindpw='', nobind=False, sslport=0, verbose=False):  # default to anon bind
+    def rebind(self):
+        """Reconnect to the DS
+        
+            @raise ldap.CONFIDENTIALITY_REQUIRED - missing TLS: 
+        """
+        SimpleLDAPObject.__init__(self, self.toLDAPURL())
+        #self.start_tls_s()
+        self.simple_bind_s(self.binddn, self.bindpw)
+
+    def __add_brookers__(self):
+        from dsadmin.brooker import (
+            Replica,
+            Backend,
+            Config)
+        self.replica = Replica(self)
+        self.backend = Backend(self)
+        self.config = Config(self)
+    
+    def __init__(self, host='localhost', port=389, binddn='', bindpw='', nobind=False, sslport=0, verbose=False):  # default to anon bind
         """We just set our instance variables and wrap the methods.
             The real work is done in the following methods, reused during
             instance creation & co.
@@ -425,7 +296,11 @@ class DSAdmin(SimpleLDAPObject):
         self.agmt = {}
         # the real init
         self.__localinit__()
+        self.log = log
+        # add brookers
+        self.__add_brookers__()
 
+        
     def __str__(self):
         """XXX and in SSL case?"""
         return self.host + ":" + str(self.port)
@@ -440,15 +315,22 @@ class DSAdmin(SimpleLDAPObject):
     #
     # Get entries
     #
-    def getEntry(self, *args):
+    def getEntry(self, *args, **kwargs):
         """Wrapper around SimpleLDAPObject.search. It is common to just get one entry.
-
+            @param  - entry dn
+            @param  - search scope, in ldap.SCOPE_BASE (default), ldap.SCOPE_SUB, ldap.SCOPE_ONE
+            @param filterstr - filterstr, default '(objectClass=*)' from SimpleLDAPObject
+            @param attrlist - list of attributes to retrieve. eg ['cn', 'uid']
+            @oaram attrsonly - default None from SimpleLDAPObject
             eg. getEntry(dn, scope, filter, attributes)
 
             XXX This cannot return None
         """
         log.debug("Retrieving entry with %r" % [args])
-        res = self.search(*args)
+        if len(args) == 1 and 'scope' not in kwargs:
+            args += (ldap.SCOPE_BASE, )
+            
+        res = self.search(*args, **kwargs)
         restype, obj = self.result(res)
         # TODO: why not test restype?
         if not obj:
@@ -519,8 +401,7 @@ class DSAdmin(SimpleLDAPObject):
         exitCode = 0
         dn = entry.dn
         while not done:
-            entry = self.getEntry(
-                dn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
+            entry = self.getEntry(dn, attrlist=attrlist)
             log.debug("task entry %r" % entry)
 
             if entry.nsTaskExitCode:
@@ -660,6 +541,7 @@ class DSAdmin(SimpleLDAPObject):
         adder = LDIFAdder(input_file, self, cont)
 
     def getSuffixes(self):
+        """@return a list of cn suffixes"""
         ents = self.search_s(DN_MAPPING_TREE, ldap.SCOPE_ONELEVEL)
         sufs = []
         for ent in ents:
@@ -681,111 +563,26 @@ class DSAdmin(SimpleLDAPObject):
 
     def setupBackend(self, suffix, binddn=None, bindpw=None, urls=None, attrvals=None, benamebase='localdb', verbose=False):
         """Setup a backend and return its dn. Blank on error
-            @param suffix
-            @param attrvals: a dict with further params like
-                            {
-                                'nsslapd-cachememsize': '1073741824',
-                                'nsslapd-cachesize': '-1',
-                            }
+        
+            NOTE This won't create a suffix nor its related entry in 
+                the tree!!!
+                
+            XXX Deprecated! @see dsadmin.brooker.Backend.add
+            
         """
-        attrvals = attrvals or {}
-        dnbase = ""
-
-        # figure out what type of be based on args
-        if binddn and bindpw and urls:  # its a chaining be
-            dnbase = DN_CHAIN
-        else:  # its a ldbm be
-            dnbase = DN_LDBM
-
-        nsuffix = normalizeDN(suffix)
-        try:
-            cn = benamebase
-            log.debug("create backend with cn: %s" % cn)
-            dn = "cn=" + cn + "," + dnbase
-            entry = Entry(dn)
-            entry.update({
-                'objectclass': ['top', 'extensibleObject', 'nsBackendInstance'],
-                'cn': cn,
-                'nsslapd-suffix': nsuffix
-            })
-
-            if binddn and bindpw and urls:  # its a chaining be
-                entry.update({
-                             'nsfarmserverurl': urls,
-                             'nsmultiplexorbinddn': binddn,
-                             'nsmultiplexorcredentials': bindpw
-                             })
-
-            # set attrvals (but not cn, because it's in dn)
-            # TODO do it in Entry
-            if attrvals:
-                entry.update(attrvals)
-                """
-                for attr, val in attrvals.items():
-                    log.debug("adding %s = %s to entry %s" % (
-                              attr, val, dn))
-                    entry.setValues(attr, val)
-                """
-            log.debug("adding entry: %r" % entry)
-            self.add_s(entry)
-        except ldap.ALREADY_EXISTS, e:
-            log.error("Entry already exists: %r" % dn)
-            raise 
-        except ldap.LDAPError, e:
-            log.error("Could not add backend entry: %r" % dn)
-            raise
-
-        self._test_entry(dn, ldap.SCOPE_BASE)
-        return cn
+        return self.backend.add(suffix=suffix, binddn=binddn, bindpw=bindpw,
+            urls=urls, attrvals=attrvals, benamebase=benamebase, 
+            setupmt=False, parent=None)
+            
 
     def setupSuffix(self, suffix, bename, parent="", verbose=False):
         """Setup a suffix with the given backend-name.
 
-            This method does not create the matching entry in the tree.
-            Ex. setupSuffix(suffix='o=addressbook1', bename='addressbook1')
-                creates:
-                    - the addressbook1 backend-name and file
-                    - the mapping in "cn=mapping tree,cn=config"
-                you have to create:
-                    - the ldap entry "o=addressbook1"
+            XXX Deprecated! @see dsadmin.brooker.Backend.setup_mt
+
         """
-        nsuffix = normalizeDN(suffix)
-        #escapedn = escapeDNValue(nsuffix)
-        nparent = ""
-        if parent:
-            nparent = normalizeDN(parent)
-        filt = suffixfilt(suffix)
-        # if suffix exists, return
-        try:
-            entry = self.getEntry(
-                DN_MAPPING_TREE, ldap.SCOPE_SUBTREE, filt)
-            return entry
-        except NoSuchEntryError:
-            entry = None
-
-        # fix me when we can actually used escaped DNs
-        #dn = "cn=%s,cn=mapping tree,cn=config" % escapedn
-        dn = ','.join(('cn="%s"' % nsuffix, DN_MAPPING_TREE))
-        entry = Entry(dn)
-        entry.update({
-            'objectclass': ['top', 'extensibleObject', 'nsMappingTree'],
-            'nsslapd-state': 'backend',
-            # the value in the dn has to be DN escaped
-            # internal code will add the quoted value - unquoted value is useful for searching
-            'cn': nsuffix,
-            'nsslapd-backend': bename
-        })
-        #entry.setValues('cn', [escapedn, nsuffix]) # the value in the dn has to be DN escaped
-        # the other value can be the unescaped value
-        if parent:
-            entry.setValues('nsslapd-parent-suffix', nparent)
-        try:
-            self.add_s(entry)
-        except ldap.LDAPError, e:
-            raise LDAPError("Error adding suffix entry " + dn, e)
-
-        ret = self._test_entry(dn, ldap.SCOPE_BASE)
-        return ret
+        return self.backend.setup_mt(suffix, bename, parent)
+        
 
     def getBackendsForSuffix(self, suffix, attrs=None):
         # TESTME removed try..except and raise if NoSuchEntryError
@@ -827,6 +624,12 @@ class DSAdmin(SimpleLDAPObject):
     def addSuffix(self, suffix, binddn=None, bindpw=None, urls=None, bename=None, beattrs=None):
         """Create and return a suffix and its backend.
 
+            @param  suffix
+            @param  urls
+            @param  bename  - name of the backed (eventually created)
+            @param  beattrs - parametes to create the backend
+            @param  binddn
+            @param  bindpw
             Uses: setupBackend and SetupSuffix
             Requires: adding a matching entry in the tree
             TODO: test return values and error codes
@@ -834,12 +637,11 @@ class DSAdmin(SimpleLDAPObject):
             `beattrs`: see setupBacked
             
         """
-
-        entries_backend = self.getBackendsForSuffix(suffix, ['cn'])
         benames = []
+        entries_backend = self.getBackendsForSuffix(suffix, ['cn'])
         # no backends for this suffix yet - create one
         if not entries_backend:
-            assert bename, "Backend name should not be None"
+            # if not bename, self.setupBackend raises
             bename = self.setupBackend(
                 suffix, binddn, bindpw, urls, benamebase=bename, attrvals=beattrs)
         else:  # use existing backend(s)
@@ -959,7 +761,7 @@ class DSAdmin(SimpleLDAPObject):
                     'dbfilecachemiss': [11, 'cachemisses'], 'dbfilepagein': [6, 'pagein'],
                     'dbfilepageout': [7, 'pageout']}
             for attr, vals in ent.iterAttrs():
-                match = DBMONATTRRE.match(attr)
+                match = RE_DBMONATTR.match(attr)
                 if match:
                     name = match.group(1)
                     num = match.group(2)
@@ -970,7 +772,7 @@ class DSAdmin(SimpleLDAPObject):
                     vallen = len(val)
                     if vallen > cols[name][0]:
                         cols[name][0] = vallen
-                match = DBMONATTRRESUN.match(attr)
+                match = RE_DBMONATTRSUN.match(attr)
                 if match:
                     name = match.group(1)
                     if name == 'entrycache':
@@ -1085,29 +887,9 @@ class DSAdmin(SimpleLDAPObject):
     def addObjClass(self, *objectclasses):
         return self.addSchema('objectClasses', objectclasses)
 
-    def enableReplLogging(self):
-        """Enable logging of replication stuff (1<<13)"""
-        return self.setLogLevel(8192)
 
-    def disableReplLogging(self):
-        return self.setLogLevel(0)
 
-    #
-    # TODO what if setLogLevel(self, vals, access='access') or 'error'
-    #
-    def setLogLevel(self, *vals):
-        """Set nsslapd-errorlog-level and return its value."""
-        val = sum(vals) 
-        self.modify_s(DN_CONFIG, [
-            (ldap.MOD_REPLACE, 'nsslapd-errorlog-level', str(val))])
-        return val
 
-    def setAccessLogLevel(self, *vals):
-        """Set nsslapd-accesslog-level and return its value."""
-        val = sum(vals)
-        self.modify_s(DN_CONFIG, [(
-            ldap.MOD_REPLACE, 'nsslapd-accesslog-level', str(val))])
-        return val
 
     def setupChainingIntermediate(self):
         confdn = ','.join(("cn=config", DN_CHAIN))
@@ -1147,27 +929,6 @@ class DSAdmin(SimpleLDAPObject):
         self.setupChainingMux(
             suffix, isIntermediate, binddn, bindpw, to.toLDAPURL())
 
-    def setupChangelog(self, dbname='changelogdb'):
-        """Add and return the replication changelog entry.
-
-            If dbname starts with "/" then it's considered a full path,
-            otherwise it's relative to self.dbdir
-        """
-        dn = "cn=changelog5,cn=config"
-        dirpath = os.path.join(self.dbdir, dbname)
-        entry = Entry(dn)
-        entry.update({
-            'objectclass': ("top", "extensibleobject"),
-            'cn': "changelog5",
-            'nsslapd-changelogdir': dirpath
-        })
-        log.debug("adding changelog entry: %r" % entry)
-        try:
-            self.add_s(entry)
-        except ldap.ALREADY_EXISTS:
-            log.warn("entry %s already exists" % dn)
-
-        return self._test_entry(dn, ldap.SCOPE_BASE)
 
     def enableChainOnUpdate(self, suffix, bename):
         # first, get the mapping tree entry to modify
@@ -1177,7 +938,7 @@ class DSAdmin(SimpleLDAPObject):
         # next, get the path of the replication plugin
         e_plugin = self.getEntry(
             "cn=Multimaster Replication Plugin,cn=plugins,cn=config",
-            ldap.SCOPE_BASE, "(objectclass=*)", ['nsslapd-pluginPath'])
+            attrlist=['nsslapd-pluginPath'])
         path = e_plugin.getValue('nsslapd-pluginPath')
 
         mod = [(ldap.MOD_REPLACE, 'nsslapd-state', 'backend'),
@@ -1203,101 +964,8 @@ class DSAdmin(SimpleLDAPObject):
         # enable the chain on update
         return self.enableChainOnUpdate(suffix, chainbe)
 
-    def setupReplica(self, args):
-        """Setup a replica agreement on an existing suffix.
 
-            args = {
-                suffix - dn of suffix
-                binddn - the replication bind dn for this replica
-                type - master, hub, leaf (see above for values) - if type is omitted, default is master
-                legacy - true or false - for legacy consumer
-                id - replica id or - if not given - an internal sequence number will be assigned
-
-                # further args
-                tpd -
-                pd -
-                referrals -
-             }
-
-             Ex. conn.setupReplica({
-                    'suffix': "dc=example,dc=com",
-                    'type'  : dsadmin.MASTER_TYPE,
-                    'binddn': "cn=replication manager,cn=config"
-              })
-             binddn can also be a list:
-            'binddn': [ "cn=repl1,cn=config", "cn=repl2,cn=config" ]
-
-            TODO: use the more descriptive naming stuff? suffix, rtype=MASTER_TYPE, legacy=False, id=None
-            TODO: this method does not update replica type
-        """
-        suffix = args['suffix']
-        binddn = args['binddn']
-        repltype = args.get('type', MASTER_TYPE)
-        replid = args.get('id')
-
-        # set default values
-        if repltype == MASTER_TYPE:
-            replicatype = REPLICA_RDWR_TYPE
-        else:
-            replicatype = REPLICA_RDONLY_TYPE
-        if args.get('legacy', False):
-            legacy = 'on'
-        else:
-            legacy = 'off'
-
-        # create replica entry in mapping-tree
-        nsuffix = normalizeDN(suffix)
-        mtent = self.getMTEntry(suffix)
-        dn_replica = "cn=replica," + mtent.dn
-        try:
-            entry = self.getEntry(dn_replica, ldap.SCOPE_BASE)
-        except ldap.NO_SUCH_OBJECT:
-            entry = None
-        if entry:
-            log.warn("Already setup replica for suffix", suffix)
-            rec = self.suffixes.setdefault(nsuffix, {})
-            rec['dn'] = dn_replica
-            rec['type'] = repltype
-            return {'dn': dn_replica, 'type': repltype}
-
-        # If a replica does not exist
-        binddnlist = []
-        if isinstance(binddn, basestring):
-            binddnlist.append(binddn)
-        else:
-            binddnlist = binddn
-
-        entry = Entry(dn_replica)
-        entry.update({
-            'objectclass': ("top", "nsds5replica", "extensibleobject"),
-            'cn': "replica",
-            'nsds5replicaroot': nsuffix,
-            'nsds5replicaid': str(replid),
-            'nsds5replicatype': str(replicatype)
-        })
-        if repltype != LEAF_TYPE:
-            entry.setValues('nsds5flags', "1")
-        entry.setValues('nsds5replicabinddn', binddnlist)
-        entry.setValues('nsds5replicalegacyconsumer', legacy)
-
-        # other args
-        if 'tpi' in args:
-            entry.setValues(
-                'nsds5replicatombstonepurgeinterval', str(args['tpi']))
-        if 'pd' in args:
-            entry.setValues('nsds5ReplicaPurgeDelay', str(args['pd']))
-        if 'referrals' in args:
-            entry.setValues('nsds5ReplicaReferral', args['referrals'])
-
-        self.add_s(entry)
-
-        # check if the entry exists TODO better to raise!
-        self._test_entry(dn_replica, ldap.SCOPE_BASE)
-
-        self.suffixes[nsuffix] = {'dn': dn_replica, 'type': repltype}
-        return {'dn': dn_replica, 'type': repltype}
-
-    def setupBindDN(self, binddn, bindpw):
+    def setupBindDN(self, binddn, bindpw, attrs=None):
         """ Return - eventually creating - a person entry with the given dn and pwd.
 
             binddn can be a dsadmin.Entry
@@ -1315,13 +983,16 @@ class DSAdmin(SimpleLDAPObject):
         ent.setValues('userpassword', bindpw)
         ent.setValues('sn', "bind dn pseudo user")
         ent.setValues('cn', "bind dn pseudo user")
-
+        
         # support for uid
         attribute, value = binddn.split(",")[0].split("=", 1)
         if attribute == 'uid':
             ent.setValues('objectclass', "top", "person", 'inetOrgPerson')
             ent.setValues('uid', value)
 
+        if attrs:
+            ent.update(attrs)
+            
         try:
             self.add_s(ent)
         except ldap.ALREADY_EXISTS:
@@ -1406,7 +1077,7 @@ class DSAdmin(SimpleLDAPObject):
         # adding agreement to previously created replica
         # eventually setting self.suffixes dict.
         if not nsuffix in self.suffixes:
-            replica_entries = self.getReplicaEnts(suffix)
+            replica_entries = self.replica.list(suffix)
             if not replica_entries:
                 raise NoSuchEntryError(
                     "Error: no replica set up for suffix " + suffix)
@@ -1503,168 +1174,27 @@ class DSAdmin(SimpleLDAPObject):
         self.agmt.setdefault(nsuffix, {})[consumer] = dn_agreement
         return dn_agreement
 
-    def stopReplication(self, agmtdn):
-        log.info("Stopping replication %s" % agmtdn)
-        mod = [(
-            ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', ['2358-2359 0'])]
-        self.modify_s(agmtdn, mod)
 
-    def restartReplication(self, agmtdn, schedule='0000-2359 0123456'):
-        """Schedules a new replication.
-        
-            `schedule` allows to customize the replication instant.
-                        see 389 documentation for further info
+
+
+    # moved to Replica
+    def setupReplica(self, args):
+        """Deprecated, use replica.add
         """
-        log.info("Restarting replication %s" % agmtdn)
-        mod = [(ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [
-                schedule])]
-        self.modify_s(agmtdn, mod)
-
-    def findAgreementDNs(self, filt='', attrs=None):
-        attrs = attrs or []
-        realfilt = "(objectclass=nsds5ReplicationAgreement)"
-        if filt:
-            realfilt = "(&%s%s)" % (realfilt, filt)
-        if not attrs:
-            attrs.append('cn')
-        ents = self.search_s(
-            DN_MAPPING_TREE, ldap.SCOPE_SUBTREE, realfilt, attrs)
-        return [ent.dn for ent in ents]
-
-    def getReplicaEnts(self, suffix=None):
-        """Return a list of replica entries under the given suffix.
-
-            If suffix is None, all replica entries under mapping tree
-            are retrieved.
-        """
-        if suffix:
-            filt = "(&(objectclass=nsds5Replica)(nsds5replicaroot=%s))" % suffix
-        else:
-            filt = "(objectclass=nsds5Replica)"
-        ents = self.search_s(DN_MAPPING_TREE, ldap.SCOPE_SUBTREE, filt)
-        return ents
-
-    def getReplStatus(self, agmtdn):
-        attrlist = ['cn', 'nsds5BeginReplicaRefresh', 'nsds5replicaUpdateInProgress',
-                    'nsds5ReplicaLastInitStatus', 'nsds5ReplicaLastInitStart',
-                    'nsds5ReplicaLastInitEnd', 'nsds5replicaReapActive',
-                    'nsds5replicaLastUpdateStart', 'nsds5replicaLastUpdateEnd',
-                    'nsds5replicaChangesSentSinceStartup', 'nsds5replicaLastUpdateStatus',
-                    'nsds5replicaChangesSkippedSinceStartup', 'nsds5ReplicaHost',
-                    'nsds5ReplicaPort']
-        try:
-            ent = self.getEntry(
-                agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
-        except NoSuchEntryError:
-            raise NoSuchEntryError(
-                "Error reading status from agreement", agmtdn)
-        else:
-            rh = ent.nsds5ReplicaHost
-            rp = ent.nsds5ReplicaPort
-            retstr = "Status for %s agmt %s:%s:%s" % (self, ent.cn, rh, rp)
-            retstr += "\tUpdate In Progress  : " + \
-                ent.nsds5replicaUpdateInProgress + "\n"
-            retstr += "\tLast Update Start   : " + \
-                ent.nsds5replicaLastUpdateStart + "\n"
-            retstr += "\tLast Update End     : " + \
-                ent.nsds5replicaLastUpdateEnd + "\n"
-            retstr += "\tNum. Changes Sent   : " + \
-                ent.nsds5replicaChangesSentSinceStartup + "\n"
-            retstr += "\tNum. Changes Skipped: " + str(
-                ent.nsds5replicaChangesSkippedSinceStartup) + "\n"
-            retstr += "\tLast Update Status  : " + \
-                ent.nsds5replicaLastUpdateStatus + "\n"
-            retstr += "\tInit in Progress    : " + str(
-                ent.nsds5BeginReplicaRefresh) + "\n"
-            retstr += "\tLast Init Start     : " + \
-                ent.nsds5ReplicaLastInitStart + "\n"
-            retstr += "\tLast Init End       : " + \
-                ent.nsds5ReplicaLastInitEnd + "\n"
-            retstr += "\tLast Init Status    : " + str(
-                ent.nsds5ReplicaLastInitStatus) + "\n"
-            retstr += "\tReap In Progress    : " + \
-                ent.nsds5replicaReapActive + "\n"
-            return retstr
-
-        return ""
-
-    def getChangesSent(self, agmtdn):
-        retval = 0
-        try:
-            ent = self.getEntry(agmtdn, ldap.SCOPE_BASE, "(objectclass=*)",
-                                ['nsds5replicaChangesSentSinceStartup'])
-        except:
-            raise NoSuchEntryError(
-                "Error reading status from agreement", agmtdn)
-
-        if ent.nsds5replicaChangesSentSinceStartup:
-            val = ent.nsds5replicaChangesSentSinceStartup
-            items = val.split(' ')
-            if len(items) == 1:
-                retval = int(items[0])
-            else:
-                for item in items:
-                    ary = item.split(":")
-                    if ary and len(ary) > 1:
-                        retval = retval + int(ary[1].split("/")[0])
-        return retval
+        return self.replica.add(**args)
 
     def startReplication_async(self, agmtdn):
-        mod = [(ldap.MOD_ADD, 'nsds5BeginReplicaRefresh', 'start')]
-        self.modify_s(agmtdn, mod)
+        return self.replica.start_async(agmtdn)
 
     def checkReplInit(self, agmtdn):
-        """returns tuple - first element is done/not done, 2nd is no error/has error"""
-        done, hasError = False, 0
-        attrlist = ['cn', 'nsds5BeginReplicaRefresh', 'nsds5replicaUpdateInProgress',
-                    'nsds5ReplicaLastInitStatus', 'nsds5ReplicaLastInitStart',
-                    'nsds5ReplicaLastInitEnd']
-        try:
-            entry = self.getEntry(
-                agmtdn, ldap.SCOPE_BASE, "(objectclass=*)", attrlist)
-        except NoSuchEntryError:
-            log.exception("Error reading status from agreement", agmtdn)
-            hasError = 1
-        else:
-            refresh = entry.nsds5BeginReplicaRefresh
-            inprogress = entry.nsds5replicaUpdateInProgress
-            status = entry.nsds5ReplicaLastInitStatus
-            if not refresh:  # done - check status
-                if not status:
-                    print "No status yet"
-                elif status.find("replica busy") > -1:
-                    print "Update failed - replica busy - status", status
-                    done = True
-                    hasError = 2
-                elif status.find("Total update succeeded") > -1:
-                    print "Update succeeded: status ", status
-                    done = True
-                elif inprogress.lower() == 'true':
-                    print "Update in progress yet not in progress: status ", status
-                else:
-                    print "Update failed: status", status
-                    hasError = 1
-                    done = True
-            elif self.verbose:
-                print "Update in progress: status", status
-
-        return done, hasError
+        return self.replica.check_init(agmtdn)
 
     def waitForReplInit(self, agmtdn):
-        done = False
-        haserror = 0
-        while not done and not haserror:
-            time.sleep(1)  # give it a few seconds to get going
-            done, haserror = self.checkReplInit(agmtdn)
-        return haserror
+        return self.replica.wait_init(agmtdn)
 
     def startReplication(self, agmtdn):
-        rc = self.startReplication_async(agmtdn)
-        if not rc:
-            rc = self.waitForReplInit(agmtdn)
-            if rc == 2:  # replica busy - retry
-                rc = self.startReplication(agmtdn)
-        return rc
+        return self.replica.start_and_wait(agmtdn)
+
 
     def replicaSetupAll(self, repArgs):
         """setup everything needed to enable replication for a given suffix.
@@ -1711,15 +1241,26 @@ class DSAdmin(SimpleLDAPObject):
 
         # enable changelog for master and hub
         if repArgs['type'] != LEAF_TYPE:
-            self.setupChangelog()
-        # create replica user
-        try:
-            self.setupBindDN(*user)
+            self.replica.changelog()
+        # create replica user without timeout and expiration issues 
+        try:            
+            attrs = list(user)
+            attrs.append({
+                'nsIdleTimeout': '0',
+                'passwordExpirationTime': '20381010000000Z'
+                })
+            self.setupBindDN(*attrs)
         except ldap.ALREADY_EXISTS:
             log.warn("User already exists: %r " % user)
 
         # setup replica
-        ret = self.setupReplica(repArgs)
+        repArgs['rtype'], repArgs['rid'] = repArgs['type'], repArgs['id']
+        
+        # remove invalid arguments from replica.add
+        for invalid_arg in 'type id bename'.split():
+            del repArgs[invalid_arg]
+        
+        ret = self.replica.add(**repArgs)
         if 'legacy' in repArgs:
             self.setupLegacyConsumer(*user)
 
@@ -1793,73 +1334,33 @@ class DSAdmin(SimpleLDAPObject):
                 mods.append((ldap.MOD_REPLACE, attr, str(val)))
         self.modify_s(dn, mods)
 
+    
+    # Moved to config
+    # replaced by loglevel
+    def enableReplLogging(self):
+        """Enable logging of replication stuff (1<<13)"""
+        val = LOG_REPLICA
+        return self.config.loglevel([val])
+
+    def disableReplLogging(self):
+        return self.config.loglevel()
+
+    def setLogLevel(self, *vals):
+        """Set nsslapd-errorlog-level and return its value."""
+        return self.config.loglevel(vals)
+
+    def setAccessLogLevel(self, *vals):
+        """Set nsslapd-accesslog-level and return its value."""
+        return self.config.loglevel(vals, level='access')
+
     def configSSL(self, secport=636, secargs=None):
         """Configure SSL support into cn=encryption,cn=config.
 
             secargs is a dict like {
                 'nsSSLPersonalitySSL': 'Server-Cert'
             }
+            
+            XXX moved to brooker.Config
         """
-        log.debug("configuring SSL with secargs:%r" % secargs)
-        secargs = secargs or {}
-
-        dn_enc = 'cn=encryption,cn=config'
-        ciphers = '-rsa_null_md5,+rsa_rc4_128_md5,+rsa_rc4_40_md5,+rsa_rc2_40_md5,+rsa_des_sha,' + \
-            '+rsa_fips_des_sha,+rsa_3des_sha,+rsa_fips_3des_sha,' + \
-            '+tls_rsa_export1024_with_rc4_56_sha,+tls_rsa_export1024_with_des_cbc_sha'
-        mod = [(ldap.MOD_REPLACE, 'nsSSL3', secargs.get('nsSSL3', 'on')),
-               (ldap.MOD_REPLACE, 'nsSSLClientAuth',
-                secargs.get('nsSSLClientAuth', 'allowed')),
-               (ldap.MOD_REPLACE, 'nsSSL3Ciphers', secargs.get('nsSSL3Ciphers', ciphers))]
-        self.modify_s(dn_enc, mod)
-
-        dn_rsa = 'cn=RSA,cn=encryption,cn=config'
-        e_rsa = Entry(dn_rsa)
-        e_rsa.update({
-            'objectclass': ['top', 'nsEncryptionModule'],
-            'nsSSLPersonalitySSL': secargs.get('nsSSLPersonalitySSL', 'Server-Cert'),
-            'nsSSLToken': secargs.get('nsSSLToken', 'internal (software)'),
-            'nsSSLActivation': secargs.get('nsSSLActivation', 'on')
-        })
-        try:
-            self.add_s(e_rsa)
-        except ldap.ALREADY_EXISTS:
-            pass
-
-        dn_config = DN_CONFIG
-        mod = [
-            (ldap.MOD_REPLACE,
-                'nsslapd-security', secargs.get('nsslapd-security', 'on')),
-            (ldap.MOD_REPLACE,
-                'nsslapd-ssl-check-hostname', secargs.get('nsslapd-ssl-check-hostname', 'off')),
-            (ldap.MOD_REPLACE,
-                'nsslapd-secureport', str(secport))
-        ]
-        log.debug("trying to modify %r with %r" % (dn_config, mod))
-        self.modify_s(dn_config, mod)
-
-        fields = 'nsslapd-security nsslapd-ssl-check-hostname'.split()
-        return self.getEntry(dn_config, ldap.SCOPE_BASE, '(objectclass=*)', fields)
-
-    def getRUV(self, suffix, tryrepl=False, verbose=False):
-        uuid = "ffffffff-ffffffff-ffffffff-ffffffff"
-        filt = "(&(nsUniqueID=%s)(objectclass=nsTombstone))" % uuid
-        attrs = ['nsds50ruv', 'nsruvReplicaLastModified']
-        ents = self.search_s(suffix, ldap.SCOPE_SUBTREE, filt, attrs)
-        ent = None
-        if ents and (len(ents) > 0):
-            ent = ents[0]
-        elif tryrepl:
-            print "Could not get RUV from", suffix, "entry - trying cn=replica"
-            ensuffix = escapeDNValue(normalizeDN(suffix))
-            dn = ','.join(("cn=replica,cn=%s" % ensuffix, DN_MAPPING_TREE))
-            ents = self.search_s(dn, ldap.SCOPE_BASE, "objectclass=*", attrs)
-        if ents and (len(ents) > 0):
-            ent = ents[0]
-        else:
-            print "Could not read RUV for", suffix
-            return None
-        if verbose:
-            print "RUV entry is", str(ent)
-        return RUV(ent)
-
+        return self.config.enable_ssl(secport, secargs)
+        

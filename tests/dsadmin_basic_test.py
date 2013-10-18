@@ -33,8 +33,8 @@ def tearDown():
     global conn
 
     # reduce log level
-    conn.setLogLevel(0)
-    conn.setAccessLogLevel(0)
+    conn.config.loglevel(0)
+    conn.config.loglevel(0, level='access')
 
     for e in conn.added_entries:
         try:
@@ -75,7 +75,7 @@ def setupBindDN_CN_test():
 
 
 def setupChangelog_default_test():
-    e = conn.setupChangelog()
+    e = conn.replica.changelog()
     conn.added_entries.append(e.dn)
     assert e.dn, "Bad changelog entry: %r " % e
     assert e.getValue('nsslapd-changelogdir').endswith("changelogdb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
@@ -83,7 +83,7 @@ def setupChangelog_default_test():
 
 
 def setupChangelog_test():
-    e = conn.setupChangelog(dbname="mockChangelogDb")
+    e = conn.replica.changelog(dbname="mockChangelogDb")
     conn.added_entries.append(e.dn)
     assert e.dn, "Bad changelog entry: %r " % e
     assert e.getValue('nsslapd-changelogdir').endswith("mockChangelogDb"), "Mismatching entry %r " % e.data.get('nsslapd-changelogdir')
@@ -91,7 +91,7 @@ def setupChangelog_test():
 
 
 def setupChangelog_full_test():
-    e = conn.setupChangelog(dbname="/tmp/mockChangelogDb")
+    e = conn.replica.changelog(dbname="/tmp/mockChangelogDb")
     conn.added_entries.append(e.dn)
 
     assert e.dn, "Bad changelog entry: %r " % e
@@ -109,12 +109,3 @@ def getMTEntry_present_test():
     e = conn.getMTEntry(suffix)
     assert e, "Entry should be present %s" % suffix
 
-
-def setLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 2
-    assert conn.setLogLevel(*vals) == sum(vals)
-
-
-def setAccessLogLevel_test():
-    vals = 1 << 0, 1 << 1, 1 << 2
-    assert conn.setAccessLogLevel(*vals) == sum(vals)

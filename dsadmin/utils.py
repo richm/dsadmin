@@ -446,7 +446,7 @@ def formatInfData(args):
         "ServerPort= %(newport)s" "\n"
         "RootDN= %(newrootdn)s" "\n"
         "RootDNPwd= %(newrootpw)s" "\n"
-        "ServerIdentifier= %(newinstance)s" "\n"
+        "ServerIdentifier= %(newinst)s" "\n"
         "Suffix= %(newsuffix)s" "\n"
         ) % args
     

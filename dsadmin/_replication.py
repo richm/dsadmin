@@ -12,6 +12,7 @@ class CSN(object):
 
     def __init__(self, csnstr):
         match = CSN.csnre.match(csnstr)
+        self.csnstr = csnstr
         self.ts = 0
         self.seq = 0
         self.rid = 0
@@ -67,7 +68,13 @@ class CSN(object):
         return retstr
 
     def __repr__(self):
-        return time.strftime("%x %X", time.localtime(self.ts)) + " seq: " + str(self.seq) + " rid: " + str(self.rid)
+        if self.csnstr and self.ts:
+            return "%s: %s %d %d %d" % \
+                   (self.csnstr,
+                    time.strftime("%x %X", time.localtime(self.ts)), 
+                    self.seq, self.rid, self.subseq)
+        else:
+            return ''
 
     def __str__(self):
         return self.__repr__()
@@ -139,10 +146,24 @@ class RUV(object):
                 diff = cmp(csn, csnoth)
                 if diff:
                     return diff
+        for rid in oth.rid.keys():
+            for item in ('max', 'min'):
+                csn = oth.rid[rid][item]
+                csnoth = self.rid[rid][item]
+                diff = cmp(csnoth, csn)
+                if diff:
+                    return diff
         return 0
 
     def __eq__(self, oth):
         return cmp(self, oth) == 0
+
+    def __str__(self):
+        ret = 'generation: %s\n' % self.gen
+        for rid in self.rid.keys():
+            ret = ret + 'rid: %s url: %s min: [%s] max: [%s]\n' % \
+                (rid, self.rid[rid]['url'], self.rid[rid].get('min', ''), self. rid[rid].get('max', ''))
+        return ret
 
     def getdiffs(self, oth):
         """Compare two ruvs and return the differences

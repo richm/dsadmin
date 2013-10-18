@@ -161,8 +161,16 @@ class Replica(object):
         """
         self.log.info("Stopping replication %s" % agmtdn)
         mod = [(
-            ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [Replica.STOP])]
-        self.conn.modify_s(agmtdn, mod)
+            ldap.MOD_REPLACE, 'nsds5ReplicaEnabled', ['off'])]
+	try:
+            self.conn.modify_s(agmtdn, mod)
+	except LDAPError, e:
+            # before 1.2.11, no support for nsds5ReplicaEnabled
+            # use schedule hack
+            mod = [(
+                    ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [
+                        Replica.STOP])]
+            self.conn.modify_s(agmtdn, mod)
 
     def restart(self, agmtdn, schedule=START):
         """Schedules a new replication.
@@ -172,9 +180,16 @@ class Replica(object):
                         see 389 documentation for further info
         """
         self.log.info("Restarting replication %s" % agmtdn)
-        mod = [(ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [
-                schedule])]
-        self.modify_s(agmtdn, mod)
+        mod = [(
+            ldap.MOD_REPLACE, 'nsds5ReplicaEnabled', ['on'])]
+	try:
+            self.conn.modify_s(agmtdn, mod)
+	except LDAPError, e:
+            # before 1.2.11, no support for nsds5ReplicaEnabled
+            # use schedule hack
+            mod = [(ldap.MOD_REPLACE, 'nsds5replicaupdateschedule', [
+                    schedule])]
+            self.conn.modify_s(agmtdn, mod)
 
     def keep_in_sync(self, agmtdn):
         """
@@ -446,6 +461,11 @@ class Replica(object):
         # further arguments
         if 'fractional' in args:
             entry.setValues('nsDS5ReplicatedAttributeList', args['fractional'])
+        # use the specified fractional total - if not specified, use the
+        # specified fractional - if not specified, skip
+        frac_total = args.get('fractional_total', args.get('fractional', None))
+        if frac_total:
+            entry.setValues('nsDS5ReplicatedAttributeListTotal', frac_total)
         if 'stripattrs' in args:
             entry.setValues('nsds5ReplicaStripAttrs', args['stripattrs'])
         if 'winsync' in args:  # state it clearly!

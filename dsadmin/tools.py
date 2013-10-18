@@ -40,7 +40,7 @@ from dsadmin._ldifconn import LDIFConn
 from dsadmin._constants import DN_DM
 
 import logging
-logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # Private constants
@@ -166,7 +166,7 @@ class DSAdminTools(object):
             timeout = timeout * 3
         timeout += int(time.time())
         if cmd == 'stop':
-            log.warn("unbinding before stop")
+            log.info("unbinding before stop")
             self.unbind()
 
         log.info("Setup error log")
@@ -175,7 +175,7 @@ class DSAdminTools(object):
         pos = logfp.tell()  # get current position
         logfp.seek(pos, os.SEEK_SET)  # reset the EOF flag
 
-        log.warn("Running command: %r" % fullCmd)
+        log.info("Running command: %r" % fullCmd)
         rc = os.system(fullCmd)
         while not done and int(time.time()) < timeout:
             line = logfp.readline()
@@ -300,12 +300,12 @@ class DSAdminTools(object):
     def runInfProg(prog, content, verbose):
         """run a program that takes an .inf style file on stdin"""
         cmd = [prog]
-        if verbose:
+        if log.isEnabledFor(logging.DEBUG):
             cmd.append('-ddd')
         else:
             cmd.extend(['-l', '/dev/null'])
         cmd.extend(['-s', '-f', '-'])
-        print "running: %s " % cmd
+        log.info("running: %s ", cmd)
         if HASPOPEN:
             pipe = Popen(cmd, stdin=PIPE, stdout=PIPE, stderr=STDOUT)
             child_stdin = pipe.stdin
@@ -322,14 +322,12 @@ class DSAdminTools(object):
                 line = rr[0].readline()
                 if not line:
                     break
-                if verbose:
-                    sys.stdout.write(line)
-            elif verbose:
-                print "timed out waiting to read from", cmd
+                log.debug(line)
+            else:
+                log.debug("timed out waiting to read from %s", cmd)
         child_stdout.close()
         exitCode = pipe.wait()
-        if verbose:
-            print "%s returned exit code %s" % (prog, exitCode)
+        log.debug("%s returned exit code %s" % (prog, exitCode))
         return exitCode
 
     @staticmethod
@@ -343,7 +341,7 @@ class DSAdminTools(object):
         
         @param args -  a dict with the following values {
             # new instance compulsory values
-            'newinstance': 'rpolli',
+            'newinst': 'rpolli',
             'newsuffix': 'dc=example,dc=com',            
             'newhost': 'localhost.localdomain',
             'newport': 22389,
@@ -426,9 +424,9 @@ class DSAdminTools(object):
             if isLocal and 'cfgdsport' not in args:
                 args['cfgdsport'] = 55555
         missing = False
-        for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinstance', 'newsuffix'):
+        for param in ('newhost', 'newport', 'newrootdn', 'newrootpw', 'newinst', 'newsuffix'):
             if param not in args:
-                log.error("missing required argument: ", param)
+                log.error("missing required argument: %s", param)
                 missing = True
         if missing:
             raise InvalidArgumentError("missing required arguments")
@@ -466,7 +464,7 @@ class DSAdminTools(object):
             'servport': args['newport'],
             'rootdn': args['newrootdn'],
             'rootpw': args['newrootpw'],
-            'servid': args['newinstance'],
+            'servid': args['newinst'],
             'suffix': args['newsuffix'],
             'servuser': args['newuserid'],
             'start_server': 1
@@ -485,7 +483,7 @@ class DSAdminTools(object):
         elif not args['new_style']:
             prog = sroot + "/bin/slapd/admin/bin/ds_create"
             if not os.access(prog, os.X_OK):
-                prog = sroot + "/bin/slapd/admin/bin/ds_newinstance"
+                prog = sroot + "/bin/slapd/admin/bin/ds_newinst"
             DSAdminTools.cgiFake(sroot, verbose, prog, cgiargs)
         else:
             prog = ''
